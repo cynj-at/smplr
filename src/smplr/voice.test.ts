@@ -232,10 +232,11 @@ describe("audio graph", () => {
     expect(gains[0].gain.value).toBeCloseTo(expected);
   });
 
-  it("envelope gain (index 1) starts at 1.0", () => {
+  it("envelope gain (index 1) starts at 1.0 when ampAttack = 0", () => {
     const { gains } = makeVoice();
     const envelope = gains[1]; // second gain is the envelope
     expect(envelope.gain.value).toBe(1.0);
+    expect(envelope.gain.setValueAtTime).not.toHaveBeenCalled();
   });
 
   it("gain connects to envelope, envelope connects to destination", () => {
@@ -243,6 +244,46 @@ describe("audio graph", () => {
     const [velocityGain, envelope] = gains;
     expect(velocityGain.connected[0]).toBe(envelope);
     expect(envelope.connected[0]).toBe(destination);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Attack
+// ---------------------------------------------------------------------------
+
+describe("attack", () => {
+  it("schedules a 0 -> 1 ramp over ampAttack seconds when ampAttack > 0", () => {
+    const { gains } = makeVoice({ ampAttack: 0.05 }, { currentTime: 1 });
+    const envelope = gains[1];
+
+    expect(envelope.gain.setValueAtTime).toHaveBeenCalledWith(0, 1);
+    expect(envelope.gain.linearRampToValueAtTime).toHaveBeenCalledWith(
+      1.0,
+      1.05,
+    );
+  });
+
+  it("schedules the ramp from startTime, not currentTime, when a future startTime is given", () => {
+    const { gains } = makeVoice(
+      { ampAttack: 0.1 },
+      { currentTime: 0, startTime: 2 },
+    );
+    const envelope = gains[1];
+
+    expect(envelope.gain.setValueAtTime).toHaveBeenCalledWith(0, 2);
+    expect(envelope.gain.linearRampToValueAtTime).toHaveBeenCalledWith(
+      1.0,
+      2.1,
+    );
+  });
+
+  it("does not schedule any envelope automation when ampAttack = 0", () => {
+    const { gains } = makeVoice({ ampAttack: 0 });
+    const envelope = gains[1];
+
+    expect(envelope.gain.setValueAtTime).not.toHaveBeenCalled();
+    expect(envelope.gain.linearRampToValueAtTime).not.toHaveBeenCalled();
+    expect(envelope.gain.value).toBe(1.0);
   });
 });
 
@@ -375,6 +416,34 @@ describe("stop()", () => {
 
     voice.stop(2); // third call — should do nothing
     expect(stopCallCount).not.toHaveBeenCalled();
+  });
+
+  it("stopped mid-attack: starts the release ramp from the attack's interpolated value, not 1.0", () => {
+    // ampAttack=1s starting at startAt=0 -> at t=0.25 the attack ramp is 25% of the way up.
+    const { voice, sources, gains } = makeVoice(
+      { ampAttack: 1, ampRelease: 0.5 },
+      { currentTime: 0 },
+    );
+    const envelope = gains[1];
+
+    voice.stop(0.25);
+
+    expect(envelope.gain.cancelScheduledValues).toHaveBeenCalledWith(0.25);
+    expect(envelope.gain.setValueAtTime).toHaveBeenCalledWith(0.25, 0.25);
+    expect(envelope.gain.linearRampToValueAtTime).toHaveBeenCalledWith(0, 0.75); // 0.25 + ampRelease(0.5)
+    expect(sources[0].stoppedAt).toBe(0.75);
+  });
+
+  it("stopped after the attack completes: starts the release ramp from 1.0, same as ampAttack = 0", () => {
+    const { voice, gains } = makeVoice(
+      { ampAttack: 0.2, ampRelease: 0.5 },
+      { currentTime: 0 },
+    );
+    const envelope = gains[1];
+
+    voice.stop(1); // well past the 0.2s attack
+
+    expect(envelope.gain.setValueAtTime).toHaveBeenCalledWith(1.0, 1);
   });
 
   it("ignores repeated calls with a later or same time", () => {

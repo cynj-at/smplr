@@ -10,6 +10,7 @@ export class Voice {
   #envelope: GainNode;
   #startAt: number;
   #releaseAt: number | undefined;
+  #ampAttack: number;
   #ampRelease: number;
   #state: "playing" | "stopping" | "stopped" = "playing";
   #endedCallbacks: (() => void)[] = [];
@@ -26,7 +27,11 @@ export class Voice {
     this.#context = context;
     this.stopId = stopId;
     this.group = group;
+    this.#ampAttack = params.ampAttack;
     this.#ampRelease = params.ampRelease;
+
+    const startAt = startTime ?? context.currentTime;
+    this.#startAt = startAt;
 
     // --- Build audio graph ---
 
@@ -64,9 +69,17 @@ export class Voice {
     const gain = context.createGain();
     gain.gain.value = midiVelToGain(params.velocity) * dbToGain(params.volume);
 
-    // Release envelope
+    /**
+     * Attack/release envelope. Attack ramps 0 → 1 over ampAttack seconds (only scheduled when
+     * non-zero, matching the SF2 default of "no attack stage").
+    */
     const envelope = context.createGain();
-    envelope.gain.value = 1.0;
+    if (this.#ampAttack > 0) {
+      envelope.gain.setValueAtTime(0, startAt);
+      envelope.gain.linearRampToValueAtTime(1.0, startAt + this.#ampAttack);
+    } else {
+      envelope.gain.value = 1.0;
+    }
 
     // Wire: source → [lpf] → gain → envelope → destination
     if (lpf) {
@@ -77,14 +90,11 @@ export class Voice {
     }
     gain.connect(envelope);
     envelope.connect(destination);
-
-    // Start
-    const startAt = startTime ?? context.currentTime;
-    this.#startAt = startAt;
-
-    // Offset: VoiceParams.offset is in seconds (matches loopStart/loopEnd).
-    // When playing in reverse (buffer is already reversed), mirror the offset so
-    // offset=T from the start of the original buffer maps to (duration-T) in the reversed one.
+    /**
+     * Offset: VoiceParams.offset is in seconds (matches loopStart/loopEnd).
+     * When playing in reverse (buffer is already reversed), mirror the offset so
+     * offset=T from the start of the original buffer maps to (duration-T) in the reversed one.
+     */
     let offsetSec = 0;
     if (params.offset > 0) {
       offsetSec = params.reverse
@@ -129,10 +139,19 @@ export class Voice {
       this.#source.stop(t);
       this.#envelope.gain.cancelScheduledValues(t);
     } else {
-      // Apply release envelope then stop the source
+      /**
+       * Apply release envelope then stop the source. If stopped mid-attack, start the release
+       * from wherever the attack ramp actually was at time t (not 1.0) - otherwise the envelope
+       * would jump up to full volume before fading out.
+      */
+      
+      const attackValueAtT =
+        this.#ampAttack > 0
+          ? Math.min(1, (t - this.#startAt) / this.#ampAttack)
+          : 1.0;
       const stopAt = t + this.#ampRelease;
       this.#envelope.gain.cancelScheduledValues(t);
-      this.#envelope.gain.setValueAtTime(1.0, t);
+      this.#envelope.gain.setValueAtTime(attackValueAtT, t);
       this.#envelope.gain.linearRampToValueAtTime(0, stopAt);
       this.#source.stop(stopAt);
     }
