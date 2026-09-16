@@ -15,6 +15,7 @@ export class Voice {
   #decayEnd: number;
   #sustainLevel: number;
   #ampRelease: number;
+  #lfos: { osc: OscillatorNode; depth: GainNode }[] = [];
   #state: "playing" | "stopping" | "stopped" = "playing";
   #endedCallbacks: (() => void)[] = [];
 
@@ -61,6 +62,24 @@ export class Voice {
     const cents = params.detune;
     if (source.detune) {
       source.detune.value = cents;
+
+      // Modulation LFOs -> pitch (SF2's "Mod LFO" and a second, independent "Vib LFO", both able to modulate pitch simultaneously).
+      this.#connectPitchLfo(
+        context,
+        source.detune,
+        startAt,
+        params.modLfoToPitch,
+        params.modLfoRateHz,
+        params.modLfoDelay,
+      );
+      this.#connectPitchLfo(
+        context,
+        source.detune,
+        startAt,
+        params.vibLfoToPitch,
+        params.vibLfoRateHz,
+        params.vibLfoDelay,
+      );
     } else {
       source.playbackRate.value = Math.pow(2, cents / 1200);
     }
@@ -158,9 +177,37 @@ export class Voice {
       gain.disconnect();
       lpf?.disconnect();
       source.disconnect();
+      this.#lfos.forEach(({ osc, depth }) => {
+        osc.disconnect();
+        depth.disconnect();
+      });
       for (const cb of this.#endedCallbacks) cb();
       this.#endedCallbacks = [];
     };
+  }
+
+  /**
+   * Creates a sine-wave LFO (delayed start, fixed rate) whose output - scaled by `depthCents` -
+   * is summed onto `target`. No-op when `depthCents` is 0.
+   */
+  #connectPitchLfo(
+    context: BaseAudioContext,
+    target: AudioParam,
+    startAt: number,
+    depthCents: number,
+    rateHz: number,
+    delaySec: number,
+  ): void {
+    if (depthCents === 0) return;
+    const osc = context.createOscillator();
+    osc.type = "sine";
+    osc.frequency.value = rateHz;
+    const depth = context.createGain();
+    depth.gain.value = depthCents;
+    osc.connect(depth);
+    depth.connect(target);
+    osc.start(startAt + delaySec);
+    this.#lfos.push({ osc, depth });
   }
 
   /**
@@ -176,6 +223,7 @@ export class Voice {
     if (t <= this.#startAt) {
       // Stop at or before start: cancel the note entirely
       this.#source.stop(t);
+      this.#lfos.forEach(({ osc }) => osc.stop(t));
     } else {
       /**
        * Apply release envelope then stop the source, starting the release from wherever the
@@ -189,6 +237,7 @@ export class Voice {
       this.#envelope.gain.setValueAtTime(valueAtT, t);
       this.#envelope.gain.linearRampToValueAtTime(0, stopAt);
       this.#source.stop(stopAt);
+      this.#lfos.forEach(({ osc }) => osc.stop(stopAt));
     }
   }
 

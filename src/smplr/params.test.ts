@@ -30,6 +30,8 @@ describe("resolveParams", () => {
       expect(result.ampHold).toBe(PARAM_DEFAULTS.ampHold);
       expect(result.ampDecay).toBe(PARAM_DEFAULTS.ampDecay);
       expect(result.ampSustain).toBe(PARAM_DEFAULTS.ampSustain);
+      expect(result.modLfoToPitch).toBe(PARAM_DEFAULTS.modLfoToPitch);
+      expect(result.vibLfoToPitch).toBe(PARAM_DEFAULTS.vibLfoToPitch);
       expect(result.loop).toBe(false);
       expect(result.loopStart).toBe(0);
       expect(result.loopEnd).toBe(0);
@@ -110,6 +112,14 @@ describe("resolveParams", () => {
       expect(result.ampHold).toBe(0.2); // from group
       expect(result.ampDecay).toBe(0.9); // region overrides group
       expect(result.ampSustain).toBe(0.1); // region overrides group
+    });
+
+    it("region LFO params override group LFO params, which override PARAM_DEFAULTS", () => {
+      const g = group({ modLfoToPitch: 5, vibLfoRateHz: 6 });
+      const r = region({ key: 60, modLfoToPitch: 20 });
+      const result = resolveParams(undefined, g, r, 60, 100);
+      expect(result.modLfoToPitch).toBe(20); // region overrides group
+      expect(result.vibLfoRateHz).toBe(6); // from group
     });
 
     it("noteOverrides override region params", () => {
