@@ -122,6 +122,13 @@ describe("resolveParams", () => {
       expect(result.vibLfoRateHz).toBe(6); // from group
     });
 
+    it("resolves modLfoToFilterFc and modLfoToVolume", () => {
+      const r = region({ key: 60, modLfoToFilterFc: 300, modLfoToVolume: 50 });
+      const result = resolveParams(undefined, group(), r, 60, 100);
+      expect(result.modLfoToFilterFc).toBe(300);
+      expect(result.modLfoToVolume).toBe(50);
+    });
+
     it("noteOverrides override region params", () => {
       const r = region({
         key: 60,

@@ -19,6 +19,8 @@ export const PARAM_DEFAULTS: Required<PlaybackParams> = {
   // 8.176Hz is SF2's own "frequency generator = 0" reference (the same constant used for
   // absolute-cents-to-Hz conversion elsewhere)
   modLfoToPitch: 0,
+  modLfoToFilterFc: 0,
+  modLfoToVolume: 0,
   modLfoRateHz: 8.176,
   modLfoDelay: 0,
   vibLfoToPitch: 0,
@@ -115,6 +117,8 @@ export function resolveParams(
     lpfCutoffHz: overrides?.lpfCutoffHz ?? merged.lpfCutoffHz,
     lpfQ: merged.lpfQ,
     modLfoToPitch: merged.modLfoToPitch,
+    modLfoToFilterFc: merged.modLfoToFilterFc,
+    modLfoToVolume: merged.modLfoToVolume,
     modLfoRateHz: merged.modLfoRateHz,
     modLfoDelay: merged.modLfoDelay,
     vibLfoToPitch: merged.vibLfoToPitch,

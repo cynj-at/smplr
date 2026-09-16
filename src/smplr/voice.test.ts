@@ -196,6 +196,8 @@ const BASE_PARAMS: VoiceParams = {
   lpfCutoffHz: 20000,
   lpfQ: 1,
   modLfoToPitch: 0,
+  modLfoToFilterFc: 0,
+  modLfoToVolume: 0,
   modLfoRateHz: 8.176,
   modLfoDelay: 0,
   vibLfoToPitch: 0,
@@ -565,6 +567,71 @@ describe("LFO pitch modulation", () => {
     expect(sources[0].stoppedAt).toBe(1.4);
     expect(oscillators[0].stoppedAt).toBe(1.4);
     expect(oscillators[1].stoppedAt).toBe(1.4);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// LFO filter/volume modulation
+// ---------------------------------------------------------------------------
+
+describe("LFO filter/volume modulation", () => {
+  it("connects the mod LFO to lpf.frequency, depth linearized around the base cutoff", () => {
+    const { filters, oscillators } = makeVoice({
+      lpfCutoffHz: 1000,
+      modLfoToFilterFc: 1200, // one octave of SF2 depth
+    });
+    expect(oscillators).toHaveLength(1);
+    // dHz = baseHz * ln(2)/1200 * depthCents = 1000 * ln(2) for a 1200-cent depth
+    const expectedDepthHz = 1000 * Math.LN2;
+    const depth = oscillators[0].connected.find(
+      (c) => (c as any).connected?.[0] === filters[0].frequency,
+    ) as ReturnType<typeof makeGain>;
+    expect(depth.gain.value).toBeCloseTo(expectedDepthHz);
+  });
+
+  it("does not create an oscillator for modLfoToFilterFc when there's no LPF to modulate (lpfCutoffHz = 20000)", () => {
+    const { oscillators } = makeVoice({
+      lpfCutoffHz: 20000,
+      modLfoToFilterFc: 1200,
+    });
+    expect(oscillators).toHaveLength(0);
+  });
+
+  it("connects the mod LFO to gain.gain, depth linearized around the base velocity/volume gain", () => {
+    // velocity=127, volume=0dB -> base linear gain = 1 (exact, see midiVelToGain)
+    const { gains, oscillators } = makeVoice({
+      velocity: 127,
+      volume: 0,
+      modLfoToVolume: 100, // 10dB (100 centibels) of SF2 depth
+    });
+    expect(oscillators).toHaveLength(1);
+    const expectedDepthLinear = 1 * (Math.LN10 / 200) * 100;
+    const velocityGain = gains[0];
+    const depth = oscillators[0].connected.find(
+      (c) => (c as any).connected?.[0] === velocityGain.gain,
+    ) as ReturnType<typeof makeGain>;
+    expect(depth.gain.value).toBeCloseTo(expectedDepthLinear);
+  });
+
+  it("shares a single oscillator across pitch, filter, and volume when all three are active", () => {
+    const { oscillators } = makeVoice({
+      lpfCutoffHz: 1000,
+      modLfoToPitch: 10,
+      modLfoToFilterFc: 200,
+      modLfoToVolume: 20,
+    });
+    expect(oscillators).toHaveLength(1);
+    expect(oscillators[0].connected).toHaveLength(3);
+  });
+
+  it("does not create anything when all mod LFO depths are 0", () => {
+    const { oscillators } = makeVoice({
+      lpfCutoffHz: 1000,
+      modLfoToPitch: 0,
+      modLfoToFilterFc: 0,
+      modLfoToVolume: 0,
+    });
+    expect(oscillators).toHaveLength(0);
   });
 });
 
