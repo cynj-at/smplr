@@ -26,6 +26,7 @@ function makeFilter() {
   return {
     type: "" as BiquadFilterType,
     frequency: { value: 0 },
+    Q: { value: 0 },
     connected: [] as unknown[],
     connect(dest: unknown) {
       this.connected.push(dest);
@@ -151,6 +152,7 @@ const BASE_PARAMS: VoiceParams = {
   ampRelease: 0.3,
   ampAttack: 0,
   lpfCutoffHz: 20000,
+  lpfQ: 1,
   offset: 0,
   loop: false,
   loopStart: 0,
@@ -251,6 +253,16 @@ describe("audio graph", () => {
     const { filters } = makeVoice({ lpfCutoffHz: 1000 });
     expect(filters[0].type).toBe("lowpass");
     expect(filters[0].frequency.value).toBe(1000);
+  });
+
+  it("sets LPF Q (resonance) when the LPF is inserted", () => {
+    const { filters } = makeVoice({ lpfCutoffHz: 1000, lpfQ: 15 });
+    expect(filters[0].Q.value).toBe(15);
+  });
+
+  it("does not create a filter for lpfQ alone when lpfCutoffHz = 20000", () => {
+    const { filters } = makeVoice({ lpfCutoffHz: 20000, lpfQ: 15 });
+    expect(filters).toHaveLength(0);
   });
 
   it("velocity gain (index 0) × volume dB", () => {

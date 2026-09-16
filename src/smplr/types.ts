@@ -10,6 +10,7 @@ export type PlaybackParams = {
   ampRelease?: number; // release envelope time in seconds
   ampAttack?: number; // attack time in seconds
   lpfCutoffHz?: number; // low-pass filter cutoff frequency in Hz
+  lpfQ?: number; // low-pass filter resonance (BiquadFilterNode.Q); 1 = no resonant peak
   offset?: number; // start playback from this position in seconds
   loop?: boolean;
   loopStart?: number; // loop start in seconds
@@ -136,6 +137,7 @@ export type VoiceParams = {
   ampRelease: number; // release envelope time in seconds
   ampAttack: number; // attack time in seconds
   lpfCutoffHz: number; // low-pass filter cutoff in Hz
+  lpfQ: number; // low-pass filter resonance (BiquadFilterNode.Q); 1 = no resonant peak
   offset: number; // start position in seconds
   loop: boolean;
   loopStart: number; // seconds

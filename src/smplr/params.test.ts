@@ -25,6 +25,7 @@ describe("resolveParams", () => {
       expect(result.pan).toBe(PARAM_DEFAULTS.pan);
       expect(result.ampRelease).toBe(PARAM_DEFAULTS.ampRelease);
       expect(result.lpfCutoffHz).toBe(PARAM_DEFAULTS.lpfCutoffHz);
+      expect(result.lpfQ).toBe(PARAM_DEFAULTS.lpfQ);
       expect(result.loop).toBe(false);
       expect(result.loopStart).toBe(0);
       expect(result.loopEnd).toBe(0);
@@ -74,6 +75,22 @@ describe("resolveParams", () => {
         100,
       );
       expect(groupOnly.pan).toBe(-0.5);
+    });
+
+    it("region lpfQ overrides group lpfQ, which overrides PARAM_DEFAULTS", () => {
+      const g = group({ lpfQ: 5 });
+      const r = region({ key: 60, lpfQ: 12 });
+      const result = resolveParams(undefined, g, r, 60, 100);
+      expect(result.lpfQ).toBe(12);
+
+      const groupOnly = resolveParams(
+        undefined,
+        g,
+        region({ key: 60 }),
+        60,
+        100,
+      );
+      expect(groupOnly.lpfQ).toBe(5);
     });
 
     it("noteOverrides override region params", () => {
