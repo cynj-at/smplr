@@ -34,6 +34,17 @@ function makeFilter() {
   };
 }
 
+function makePanner() {
+  return {
+    pan: { value: 0 },
+    connected: [] as unknown[],
+    connect(dest: unknown) {
+      this.connected.push(dest);
+    },
+    disconnect: jest.fn(),
+  };
+}
+
 type SourceMock = ReturnType<typeof makeSource>;
 
 function makeSource({ withDetune = true } = {}) {
@@ -71,6 +82,7 @@ function makeContext({ safari = false, currentTime = 0 } = {}) {
   const sources: SourceMock[] = [];
   const gains: ReturnType<typeof makeGain>[] = [];
   const filters: ReturnType<typeof makeFilter>[] = [];
+  const panners: ReturnType<typeof makePanner>[] = [];
 
   const ctx = {
     currentTime,
@@ -90,9 +102,20 @@ function makeContext({ safari = false, currentTime = 0 } = {}) {
       filters.push(f);
       return f as unknown as BiquadFilterNode;
     },
+    createStereoPanner() {
+      const p = makePanner();
+      panners.push(p);
+      return p as unknown as StereoPannerNode;
+    },
   };
 
-  return { ctx: ctx as unknown as BaseAudioContext, sources, gains, filters };
+  return {
+    ctx: ctx as unknown as BaseAudioContext,
+    sources,
+    gains,
+    filters,
+    panners,
+  };
 }
 
 function makeBuffer({
@@ -124,6 +147,7 @@ const BASE_PARAMS: VoiceParams = {
   detune: 0,
   velocity: 100,
   volume: 0,
+  pan: 0,
   ampRelease: 0.3,
   ampAttack: 0,
   lpfCutoffHz: 20000,
@@ -149,7 +173,10 @@ function makeVoice(
     group?: number;
   } = {},
 ) {
-  const { ctx, sources, gains, filters } = makeContext({ safari, currentTime });
+  const { ctx, sources, gains, filters, panners } = makeContext({
+    safari,
+    currentTime,
+  });
   const buffer = makeBuffer();
   const destination = makeDestination();
   const params = { ...BASE_PARAMS, ...overrides };
@@ -162,7 +189,7 @@ function makeVoice(
     group,
     startTime,
   );
-  return { voice, ctx, sources, gains, filters, buffer, destination };
+  return { voice, ctx, sources, gains, filters, panners, buffer, destination };
 }
 
 // ---------------------------------------------------------------------------
@@ -244,6 +271,38 @@ describe("audio graph", () => {
     const [velocityGain, envelope] = gains;
     expect(velocityGain.connected[0]).toBe(envelope);
     expect(envelope.connected[0]).toBe(destination);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pan
+// ---------------------------------------------------------------------------
+
+describe("pan", () => {
+  it("does not create a panner when pan = 0 (center)", () => {
+    const { gains, panners } = makeVoice({ pan: 0 });
+    expect(panners).toHaveLength(0);
+    // gain connects directly to envelope (gains[1])
+    expect(gains[0].connected[0]).toBe(gains[1]);
+  });
+
+  it("creates a StereoPannerNode and sets its pan value when pan != 0", () => {
+    const { panners } = makeVoice({ pan: -0.5 });
+    expect(panners).toHaveLength(1);
+    expect(panners[0].pan.value).toBe(-0.5);
+  });
+
+  it("wires gain → pan → envelope when pan != 0", () => {
+    const { gains, panners } = makeVoice({ pan: 0.75 });
+    const [velocityGain, envelope] = gains;
+    expect(velocityGain.connected[0]).toBe(panners[0]);
+    expect(panners[0].connected[0]).toBe(envelope);
+  });
+
+  it("disconnects the panner on source end", () => {
+    const { sources, panners } = makeVoice({ pan: 1 });
+    sources[0].triggerEnded();
+    expect(panners[0].disconnect).toHaveBeenCalled();
   });
 });
 
