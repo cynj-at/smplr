@@ -149,8 +149,12 @@ const BASE_PARAMS: VoiceParams = {
   velocity: 100,
   volume: 0,
   pan: 0,
-  ampRelease: 0.3,
+  ampDelay: 0,
   ampAttack: 0,
+  ampHold: 0,
+  ampDecay: 0,
+  ampSustain: 1,
+  ampRelease: 0.3,
   lpfCutoffHz: 20000,
   lpfQ: 1,
   offset: 0,
@@ -359,6 +363,71 @@ describe("attack", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Delay
+// ---------------------------------------------------------------------------
+
+describe("delay", () => {
+  it("holds the envelope at 0 until ampDelay elapses, then attacks", () => {
+    const { gains } = makeVoice(
+      { ampDelay: 0.2, ampAttack: 0.1 },
+      { currentTime: 1 },
+    );
+    const envelope = gains[1];
+
+    expect(envelope.gain.setValueAtTime).toHaveBeenCalledWith(0, 1.2); // delayEnd
+    expect(envelope.gain.linearRampToValueAtTime).toHaveBeenCalledWith(
+      1.0,
+      1.3,
+    ); // attackEnd
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Hold
+// ---------------------------------------------------------------------------
+
+describe("hold", () => {
+  it("holds the envelope flat at 1 through ampHold before decay starts", () => {
+    const { gains } = makeVoice(
+      { ampAttack: 0.1, ampHold: 0.2, ampDecay: 0.1, ampSustain: 0.5 },
+      { currentTime: 1 },
+    );
+    const envelope = gains[1];
+
+    expect(envelope.gain.setValueAtTime).toHaveBeenCalledWith(1.0, 1.3); // holdEnd = attackEnd(1.1) + hold(0.2)
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Decay / sustain
+// ---------------------------------------------------------------------------
+
+describe("decay/sustain", () => {
+  it("ramps from 1 to ampSustain, over ampDecay scaled by how far it has to fall", () => {
+    // ampDecay is the time for a *full* (100%) decay; reaching ampSustain=0.25 only takes 75% of it.
+    const { gains } = makeVoice(
+      { ampDecay: 1, ampSustain: 0.25 },
+      { currentTime: 0 },
+    );
+    const envelope = gains[1];
+
+    expect(envelope.gain.linearRampToValueAtTime).toHaveBeenCalledWith(
+      0.25,
+      0.75,
+    );
+  });
+
+  it("does not schedule envelope automation when ampDecay > 0 but ampSustain = 1 (nothing to decay to)", () => {
+    const { gains } = makeVoice({ ampDecay: 1, ampSustain: 1 });
+    const envelope = gains[1];
+
+    expect(envelope.gain.setValueAtTime).not.toHaveBeenCalled();
+    expect(envelope.gain.linearRampToValueAtTime).not.toHaveBeenCalled();
+    expect(envelope.gain.value).toBe(1.0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Detune
 // ---------------------------------------------------------------------------
 
@@ -515,6 +584,34 @@ describe("stop()", () => {
     voice.stop(1); // well past the 0.2s attack
 
     expect(envelope.gain.setValueAtTime).toHaveBeenCalledWith(1.0, 1);
+  });
+
+  it("stopped mid-decay: starts the release ramp from the decay's interpolated value", () => {
+    // ampDecay=1s (full decay time) from 1 -> ampSustain=0, starting at startAt=0 ->
+    // at t=0.5 the decay is 50% of the way down: 1 + (0-1)*0.5 = 0.5
+    const { voice, sources, gains } = makeVoice(
+      { ampDecay: 1, ampSustain: 0, ampRelease: 0.3 },
+      { currentTime: 0 },
+    );
+    const envelope = gains[1];
+
+    voice.stop(0.5);
+
+    expect(envelope.gain.setValueAtTime).toHaveBeenCalledWith(0.5, 0.5);
+    expect(envelope.gain.linearRampToValueAtTime).toHaveBeenCalledWith(0, 0.8); // 0.5 + ampRelease(0.3)
+    expect(sources[0].stoppedAt).toBe(0.8);
+  });
+
+  it("stopped during sustain: starts the release ramp from ampSustain, not 1.0", () => {
+    const { voice, gains } = makeVoice(
+      { ampDecay: 0.1, ampSustain: 0.4, ampRelease: 0.2 },
+      { currentTime: 0 },
+    );
+    const envelope = gains[1];
+
+    voice.stop(1); // well past the 0.1s decay - sitting in sustain
+
+    expect(envelope.gain.setValueAtTime).toHaveBeenCalledWith(0.4, 1);
   });
 
   it("ignores repeated calls with a later or same time", () => {

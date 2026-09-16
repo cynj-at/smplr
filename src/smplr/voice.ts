@@ -10,7 +10,11 @@ export class Voice {
   #envelope: GainNode;
   #startAt: number;
   #releaseAt: number | undefined;
-  #ampAttack: number;
+  #delayEnd: number;
+  #attackEnd: number;
+  #holdEnd: number;
+  #decayEnd: number;
+  #sustainLevel: number;
   #ampRelease: number;
   #state: "playing" | "stopping" | "stopped" = "playing";
   #endedCallbacks: (() => void)[] = [];
@@ -27,11 +31,27 @@ export class Voice {
     this.#context = context;
     this.stopId = stopId;
     this.group = group;
-    this.#ampAttack = params.ampAttack;
     this.#ampRelease = params.ampRelease;
 
     const startAt = startTime ?? context.currentTime;
     this.#startAt = startAt;
+
+    /**
+     * Volume envelope phase boundaries, as absolute AudioContext times: delay (silent) -> attack
+     * (0 -> 1 ramp) -> hold (flat at 1) -> decay (1 -> ampSustain ramp) -> sustain (flat at
+     * ampSustain, held until stop()). SF2's DecayVolEnv is the time for a *full* (100%) decay;
+     * the decay phase actually ends early, once the envelope reaches ampSustain.
+     */
+    const delayEnd = startAt + params.ampDelay;
+    const attackEnd = delayEnd + params.ampAttack;
+    const holdEnd = attackEnd + params.ampHold;
+    const decayToSustainSeconds = params.ampDecay * (1 - params.ampSustain);
+    const decayEnd = holdEnd + decayToSustainSeconds;
+    this.#delayEnd = delayEnd;
+    this.#attackEnd = attackEnd;
+    this.#holdEnd = holdEnd;
+    this.#decayEnd = decayEnd;
+    this.#sustainLevel = params.ampSustain;
 
     // --- Build audio graph ---
 
@@ -80,13 +100,23 @@ export class Voice {
     }
 
     /**
-     * Attack/release envelope. Attack ramps 0 → 1 over ampAttack seconds (only scheduled when
-     * non-zero, matching the SF2 default of "no attack stage").
+     * Volume envelope: delay (silent) -> attack (0 -> 1) -> hold (flat at 1) -> decay
+     * (1 -> ampSustain) -> sustain (held at ampSustain until stop()). Only scheduled when any
+     * phase actually shapes the sound - the common case (every phase at its SF2 default) skips
+     * AudioParam automation entirely and stays flat at 1, matching plain sample playback.
      */
     const envelope = context.createGain();
-    if (this.#ampAttack > 0) {
+    const hasEnvelopeShape =
+      delayEnd > startAt ||
+      attackEnd > delayEnd ||
+      holdEnd > attackEnd ||
+      this.#sustainLevel !== 1;
+    if (hasEnvelopeShape) {
       envelope.gain.setValueAtTime(0, startAt);
-      envelope.gain.linearRampToValueAtTime(1.0, startAt + this.#ampAttack);
+      envelope.gain.setValueAtTime(0, delayEnd);
+      envelope.gain.linearRampToValueAtTime(1.0, attackEnd);
+      envelope.gain.setValueAtTime(1.0, holdEnd);
+      envelope.gain.linearRampToValueAtTime(this.#sustainLevel, decayEnd);
     } else {
       envelope.gain.value = 1.0;
     }
@@ -156,21 +186,37 @@ export class Voice {
       this.#envelope.gain.cancelScheduledValues(t);
     } else {
       /**
-       * Apply release envelope then stop the source. If stopped mid-attack, start the release
-       * from wherever the attack ramp actually was at time t (not 1.0) - otherwise the envelope
-       * would jump up to full volume before fading out.
+       * Apply release envelope then stop the source, starting the release from wherever the
+       * envelope actually was at time t (whichever phase - delay/attack/hold/decay/sustain -
+       * that falls in), not from 1.0 - otherwise a note stopped mid-attack or mid-decay would
+       * jump to a different volume before fading out.
        */
-
-      const attackValueAtT =
-        this.#ampAttack > 0
-          ? Math.min(1, (t - this.#startAt) / this.#ampAttack)
-          : 1.0;
+      const valueAtT = this.#envelopeValueAt(t);
       const stopAt = t + this.#ampRelease;
       this.#envelope.gain.cancelScheduledValues(t);
-      this.#envelope.gain.setValueAtTime(attackValueAtT, t);
+      this.#envelope.gain.setValueAtTime(valueAtT, t);
       this.#envelope.gain.linearRampToValueAtTime(0, stopAt);
       this.#source.stop(stopAt);
     }
+  }
+
+  /** The volume envelope's value at AudioContext time `t` (t must be > #startAt). */
+  #envelopeValueAt(t: number): number {
+    if (t <= this.#delayEnd) return 0;
+    if (t <= this.#attackEnd) {
+      return this.#attackEnd > this.#delayEnd
+        ? (t - this.#delayEnd) / (this.#attackEnd - this.#delayEnd)
+        : 1;
+    }
+    if (t <= this.#holdEnd) return 1;
+    if (t <= this.#decayEnd) {
+      return this.#decayEnd > this.#holdEnd
+        ? 1 +
+            (this.#sustainLevel - 1) *
+              ((t - this.#holdEnd) / (this.#decayEnd - this.#holdEnd))
+        : this.#sustainLevel;
+    }
+    return this.#sustainLevel;
   }
 
   /**

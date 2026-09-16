@@ -7,8 +7,12 @@ export type PlaybackParams = {
   pan?: number; // stereo position: -1 (full left) to 1 (full right), 0 = center
   tune?: number; // pitch adjustment in semitones
   detune?: number; // fine pitch adjustment in cents
-  ampRelease?: number; // release envelope time in seconds
+  ampDelay?: number; // silence before the attack phase starts, in seconds
   ampAttack?: number; // attack time in seconds
+  ampHold?: number; // time held at peak (1.0) before decay starts, in seconds
+  ampDecay?: number; // time to fall from peak to ampSustain, in seconds
+  ampSustain?: number; // level held after decay, until note-off (0-1, 1 = no decay)
+  ampRelease?: number; // release envelope time in seconds
   lpfCutoffHz?: number; // low-pass filter cutoff frequency in Hz
   lpfQ?: number; // low-pass filter resonance (BiquadFilterNode.Q); 1 = no resonant peak
   offset?: number; // start playback from this position in seconds
@@ -134,8 +138,12 @@ export type VoiceParams = {
   velocity: number; // 0-127
   volume: number; // dB gain adjustment
   pan: number; // stereo position: -1 (full left) to 1 (full right), 0 = center
-  ampRelease: number; // release envelope time in seconds
+  ampDelay: number; // silence before the attack phase starts, in seconds
   ampAttack: number; // attack time in seconds
+  ampHold: number; // time held at peak (1.0) before decay starts, in seconds
+  ampDecay: number; // time to fall from peak to ampSustain, in seconds
+  ampSustain: number; // level held after decay, until note-off (0-1, 1 = no decay)
+  ampRelease: number; // release envelope time in seconds
   lpfCutoffHz: number; // low-pass filter cutoff in Hz
   lpfQ: number; // low-pass filter resonance (BiquadFilterNode.Q); 1 = no resonant peak
   offset: number; // start position in seconds
