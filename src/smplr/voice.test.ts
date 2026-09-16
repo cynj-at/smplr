@@ -46,12 +46,43 @@ function makePanner() {
   };
 }
 
+/** A connectable AudioParam mock, for source.detune (LFOs sum their output onto it). */
+function makeDetune() {
+  return {
+    value: 0,
+    connected: [] as unknown[],
+    connect(dest: unknown) {
+      this.connected.push(dest);
+    },
+  };
+}
+
+function makeOscillator() {
+  return {
+    type: "" as OscillatorType,
+    frequency: { value: 0 },
+    connected: [] as unknown[],
+    connect(dest: unknown) {
+      this.connected.push(dest);
+    },
+    disconnect: jest.fn(),
+    startedAt: undefined as number | undefined,
+    stoppedAt: undefined as number | undefined,
+    start(when?: number) {
+      this.startedAt = when;
+    },
+    stop(when?: number) {
+      this.stoppedAt = when;
+    },
+  };
+}
+
 type SourceMock = ReturnType<typeof makeSource>;
 
 function makeSource({ withDetune = true } = {}) {
   return {
     buffer: null as AudioBuffer | null,
-    ...(withDetune ? { detune: { value: 0 } } : {}),
+    ...(withDetune ? { detune: makeDetune() } : {}),
     playbackRate: { value: 1 },
     loop: false,
     loopStart: 0,
@@ -84,6 +115,7 @@ function makeContext({ safari = false, currentTime = 0 } = {}) {
   const gains: ReturnType<typeof makeGain>[] = [];
   const filters: ReturnType<typeof makeFilter>[] = [];
   const panners: ReturnType<typeof makePanner>[] = [];
+  const oscillators: ReturnType<typeof makeOscillator>[] = [];
 
   const ctx = {
     currentTime,
@@ -108,6 +140,11 @@ function makeContext({ safari = false, currentTime = 0 } = {}) {
       panners.push(p);
       return p as unknown as StereoPannerNode;
     },
+    createOscillator() {
+      const o = makeOscillator();
+      oscillators.push(o);
+      return o as unknown as OscillatorNode;
+    },
   };
 
   return {
@@ -116,6 +153,7 @@ function makeContext({ safari = false, currentTime = 0 } = {}) {
     gains,
     filters,
     panners,
+    oscillators,
   };
 }
 
@@ -157,6 +195,12 @@ const BASE_PARAMS: VoiceParams = {
   ampRelease: 0.3,
   lpfCutoffHz: 20000,
   lpfQ: 1,
+  modLfoToPitch: 0,
+  modLfoRateHz: 8.176,
+  modLfoDelay: 0,
+  vibLfoToPitch: 0,
+  vibLfoRateHz: 8.176,
+  vibLfoDelay: 0,
   offset: 0,
   loop: false,
   loopStart: 0,
@@ -179,7 +223,7 @@ function makeVoice(
     group?: number;
   } = {},
 ) {
-  const { ctx, sources, gains, filters, panners } = makeContext({
+  const { ctx, sources, gains, filters, panners, oscillators } = makeContext({
     safari,
     currentTime,
   });
@@ -195,7 +239,17 @@ function makeVoice(
     group,
     startTime,
   );
-  return { voice, ctx, sources, gains, filters, panners, buffer, destination };
+  return {
+    voice,
+    ctx,
+    sources,
+    gains,
+    filters,
+    panners,
+    oscillators,
+    buffer,
+    destination,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -448,6 +502,69 @@ describe("detune", () => {
   it("0 cents → playbackRate = 1 on Safari", () => {
     const { sources } = makeVoice({ detune: 0 }, { safari: true });
     expect(sources[0].playbackRate.value).toBeCloseTo(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// LFO pitch modulation
+// ---------------------------------------------------------------------------
+
+describe("LFO pitch modulation", () => {
+  it("does not create an oscillator when both LFO depths are 0", () => {
+    const { oscillators } = makeVoice({ modLfoToPitch: 0, vibLfoToPitch: 0 });
+    expect(oscillators).toHaveLength(0);
+  });
+
+  it("creates a sine oscillator for the mod LFO when modLfoToPitch != 0, wired through a depth gain to source.detune", () => {
+    const { sources, oscillators } = makeVoice({
+      modLfoToPitch: 25,
+      modLfoRateHz: 6,
+    });
+    expect(oscillators).toHaveLength(1);
+    const [osc] = oscillators;
+    expect(osc.type).toBe("sine");
+    expect(osc.frequency.value).toBe(6);
+
+    const depth = osc.connected[0] as ReturnType<typeof makeGain>;
+    expect(depth.gain.value).toBe(25);
+    expect(depth.connected[0]).toBe((sources[0] as any).detune);
+  });
+
+  it("starts the mod LFO at startAt + modLfoDelay", () => {
+    const { oscillators } = makeVoice(
+      { modLfoToPitch: 10, modLfoDelay: 0.3 },
+      { currentTime: 1 },
+    );
+    expect(oscillators[0].startedAt).toBe(1.3);
+  });
+
+  it("creates independent oscillators for mod LFO and vib LFO when both are active", () => {
+    const { oscillators } = makeVoice({
+      modLfoToPitch: 10,
+      modLfoRateHz: 4,
+      vibLfoToPitch: 20,
+      vibLfoRateHz: 6,
+    });
+    expect(oscillators).toHaveLength(2);
+    expect(oscillators.map((o) => o.frequency.value).sort()).toEqual([4, 6]);
+  });
+
+  it("does not create an oscillator on the Safari playbackRate fallback (no detune AudioParam to sum onto)", () => {
+    const { oscillators } = makeVoice({ modLfoToPitch: 10 }, { safari: true });
+    expect(oscillators).toHaveLength(0);
+  });
+
+  it("stops both LFO oscillators at the same time the source stops", () => {
+    const { voice, sources, oscillators } = makeVoice(
+      { modLfoToPitch: 10, vibLfoToPitch: 10, ampRelease: 0.4 },
+      { currentTime: 0 },
+    );
+
+    voice.stop(1);
+
+    expect(sources[0].stoppedAt).toBe(1.4);
+    expect(oscillators[0].stoppedAt).toBe(1.4);
+    expect(oscillators[1].stoppedAt).toBe(1.4);
   });
 });
 

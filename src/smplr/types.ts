@@ -15,6 +15,15 @@ export type PlaybackParams = {
   ampRelease?: number; // release envelope time in seconds
   lpfCutoffHz?: number; // low-pass filter cutoff frequency in Hz
   lpfQ?: number; // low-pass filter resonance (BiquadFilterNode.Q); 1 = no resonant peak
+  // Modulation LFO -> pitch.
+  modLfoToPitch?: number; // pitch modulation depth in cents (peak deviation); 0 = no effect
+  modLfoRateHz?: number; // modulation LFO rate in Hz
+  modLfoDelay?: number; // silence before the modulation LFO starts, in seconds
+  // Vibrato LFO -> pitch: a second, independent LFO dedicated to pitch (SF2 models these as
+  // two separate oscillators that can run at different rates/depths simultaneously).
+  vibLfoToPitch?: number; // pitch modulation depth in cents (peak deviation); 0 = no effect
+  vibLfoRateHz?: number; // vibrato LFO rate in Hz
+  vibLfoDelay?: number; // silence before the vibrato LFO starts, in seconds
   offset?: number; // start playback from this position in seconds
   loop?: boolean;
   loopStart?: number; // loop start in seconds
@@ -146,6 +155,12 @@ export type VoiceParams = {
   ampRelease: number; // release envelope time in seconds
   lpfCutoffHz: number; // low-pass filter cutoff in Hz
   lpfQ: number; // low-pass filter resonance (BiquadFilterNode.Q); 1 = no resonant peak
+  modLfoToPitch: number; // pitch modulation depth in cents; 0 = no LFO
+  modLfoRateHz: number; // modulation LFO rate in Hz
+  modLfoDelay: number; // silence before the modulation LFO starts, in seconds
+  vibLfoToPitch: number; // pitch modulation depth in cents; 0 = no LFO
+  vibLfoRateHz: number; // vibrato LFO rate in Hz
+  vibLfoDelay: number; // silence before the vibrato LFO starts, in seconds
   offset: number; // start position in seconds
   loop: boolean;
   loopStart: number; // seconds
