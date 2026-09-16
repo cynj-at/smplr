@@ -16,7 +16,8 @@ export class Voice {
   #decayEnd: number;
   #sustainLevel: number;
   #ampRelease: number;
-  #lfos: { osc: OscillatorNode; depth: GainNode }[] = [];
+  #lfoOscillators: OscillatorNode[] = [];
+  #lfoDepths: GainNode[] = [];
   #state: "playing" | "stopping" | "stopped" = "playing";
   #endedCallbacks: (() => void)[] = [];
 
@@ -63,24 +64,6 @@ export class Voice {
     const cents = params.detune;
     if (source.detune) {
       source.detune.value = cents;
-
-      // Modulation LFOs -> pitch (SF2's "Mod LFO" and a second, independent "Vib LFO", both able to modulate pitch simultaneously).
-      this.#connectPitchLfo(
-        context,
-        source.detune,
-        startAt,
-        params.modLfoToPitch,
-        params.modLfoRateHz,
-        params.modLfoDelay,
-      );
-      this.#connectPitchLfo(
-        context,
-        source.detune,
-        startAt,
-        params.vibLfoToPitch,
-        params.vibLfoRateHz,
-        params.vibLfoDelay,
-      );
     } else {
       source.playbackRate.value = Math.pow(2, cents / 1200);
     }
@@ -116,6 +99,61 @@ export class Voice {
     if (params.pan !== 0) {
       panner = context.createStereoPanner();
       panner.pan.value = params.pan;
+    }
+
+    /**
+     * Modulation LFOs. Mod LFO can drive pitch, filter cutoff, and volume (tremolo)
+     * simultaneously - one shared oscillator, one depth-gain branch per destination actually in
+     * use. Vib LFO is a second, independent oscillator dedicated to pitch only (SF2 models these
+     * as genuinely separate LFOs, not one LFO with a vibrato flag).
+     *
+     * Pitch is exact: detune is natively in cents, so an LFO's signal sums onto it with no
+     * conversion. Filter/volume are linear approximations of SF2's exponential units (cents,
+     * centibels) - Web Audio only sums LFO signals linearly onto frequency/gain AudioParams, so
+     * depths are converted via the derivative of the exponential curve at the base value
+     * (accurate for modest modulation depths, increasingly approximate for extreme sweeps).
+     */
+    if (
+      (source.detune && params.modLfoToPitch !== 0) ||
+      (lpf && params.modLfoToFilterFc !== 0) ||
+      params.modLfoToVolume !== 0
+    ) {
+      const modLfo = this.#createLfo(
+        context,
+        startAt,
+        params.modLfoRateHz,
+        params.modLfoDelay,
+      );
+      if (source.detune) {
+        this.#connectLfoDepth(
+          context,
+          modLfo,
+          source.detune,
+          params.modLfoToPitch,
+        );
+      }
+      if (lpf) {
+        const filterDepthHz =
+          params.lpfCutoffHz * (Math.LN2 / 1200) * params.modLfoToFilterFc;
+        this.#connectLfoDepth(context, modLfo, lpf.frequency, filterDepthHz);
+      }
+      const volumeDepthLinear =
+        gain.gain.value * (Math.LN10 / 200) * params.modLfoToVolume;
+      this.#connectLfoDepth(context, modLfo, gain.gain, volumeDepthLinear);
+    }
+    if (source.detune && params.vibLfoToPitch !== 0) {
+      const vibLfo = this.#createLfo(
+        context,
+        startAt,
+        params.vibLfoRateHz,
+        params.vibLfoDelay,
+      );
+      this.#connectLfoDepth(
+        context,
+        vibLfo,
+        source.detune,
+        params.vibLfoToPitch,
+      );
     }
 
     /**
@@ -178,37 +216,41 @@ export class Voice {
       gain.disconnect();
       lpf?.disconnect();
       source.disconnect();
-      this.#lfos.forEach(({ osc, depth }) => {
-        osc.disconnect();
-        depth.disconnect();
-      });
+      this.#lfoOscillators.forEach((osc) => osc.disconnect());
+      this.#lfoDepths.forEach((depth) => depth.disconnect());
       for (const cb of this.#endedCallbacks) cb();
       this.#endedCallbacks = [];
     };
   }
 
-  /**
-   * Creates a sine-wave LFO (delayed start, fixed rate) whose output - scaled by `depthCents` -
-   * is summed onto `target`. No-op when `depthCents` is 0.
-   */
-  #connectPitchLfo(
+  /** Creates and starts a sine-wave LFO oscillator (delayed start, fixed rate). Not yet connected to anything. */
+  #createLfo(
     context: BaseAudioContext,
-    target: AudioParam,
     startAt: number,
-    depthCents: number,
     rateHz: number,
     delaySec: number,
-  ): void {
-    if (depthCents === 0) return;
+  ): OscillatorNode {
     const osc = context.createOscillator();
     osc.type = "sine";
     osc.frequency.value = rateHz;
-    const depth = context.createGain();
-    depth.gain.value = depthCents;
-    osc.connect(depth);
-    depth.connect(target);
     osc.start(startAt + delaySec);
-    this.#lfos.push({ osc, depth });
+    this.#lfoOscillators.push(osc);
+    return osc;
+  }
+
+  /** Sums `osc`'s output, scaled by `depth`, onto `target`. No-op when `depth` is 0. */
+  #connectLfoDepth(
+    context: BaseAudioContext,
+    osc: OscillatorNode,
+    target: AudioParam,
+    depth: number,
+  ): void {
+    if (depth === 0) return;
+    const depthGain = context.createGain();
+    depthGain.gain.value = depth;
+    osc.connect(depthGain);
+    depthGain.connect(target);
+    this.#lfoDepths.push(depthGain);
   }
 
   /**
@@ -231,7 +273,7 @@ export class Voice {
       // Stop at or before start: cancel the note entirely
       this.#source.stop(t);
       this.#envelope.gain.cancelScheduledValues(t);
-      this.#lfos.forEach(({ osc }) => osc.stop(t));
+      this.#lfoOscillators.forEach((osc) => osc.stop(t));
     } else {
       /**
        * Apply release envelope then stop the source, starting the release from wherever the
@@ -245,7 +287,7 @@ export class Voice {
       this.#envelope.gain.setValueAtTime(valueAtT, t);
       this.#envelope.gain.linearRampToValueAtTime(0, stopAt);
       this.#source.stop(stopAt);
-      this.#lfos.forEach(({ osc }) => osc.stop(stopAt));
+      this.#lfoOscillators.forEach((osc) => osc.stop(stopAt));
     }
   }
 

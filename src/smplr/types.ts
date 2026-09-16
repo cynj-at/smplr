@@ -15,8 +15,13 @@ export type PlaybackParams = {
   ampRelease?: number; // release envelope time in seconds
   lpfCutoffHz?: number; // low-pass filter cutoff frequency in Hz
   lpfQ?: number; // low-pass filter resonance (BiquadFilterNode.Q); 1 = no resonant peak
-  // Modulation LFO -> pitch.
+  // Modulation LFO -> pitch / filter cutoff / volume (tremolo). All three destinations share
+  // one oscillator. Filter and volume depths are linear approximations of SF2's exponential
+  // units (cents/centibels), since Web Audio sums LFO signals linearly onto frequency/gain -
+  // accurate for modest depths, less so for extreme sweeps. Pitch is exact (detune is cents-native).
   modLfoToPitch?: number; // pitch modulation depth in cents (peak deviation); 0 = no effect
+  modLfoToFilterFc?: number; // filter cutoff modulation depth in cents (peak deviation); 0 = no effect
+  modLfoToVolume?: number; // volume (tremolo) modulation depth in centibels (peak deviation); 0 = no effect
   modLfoRateHz?: number; // modulation LFO rate in Hz
   modLfoDelay?: number; // silence before the modulation LFO starts, in seconds
   // Vibrato LFO -> pitch: a second, independent LFO dedicated to pitch (SF2 models these as
@@ -156,6 +161,8 @@ export type VoiceParams = {
   lpfCutoffHz: number; // low-pass filter cutoff in Hz
   lpfQ: number; // low-pass filter resonance (BiquadFilterNode.Q); 1 = no resonant peak
   modLfoToPitch: number; // pitch modulation depth in cents; 0 = no LFO
+  modLfoToFilterFc: number; // filter cutoff modulation depth in cents; 0 = no effect
+  modLfoToVolume: number; // volume (tremolo) modulation depth in centibels; 0 = no effect
   modLfoRateHz: number; // modulation LFO rate in Hz
   modLfoDelay: number; // silence before the modulation LFO starts, in seconds
   vibLfoToPitch: number; // pitch modulation depth in cents; 0 = no LFO
