@@ -26,6 +26,10 @@ describe("resolveParams", () => {
       expect(result.ampRelease).toBe(PARAM_DEFAULTS.ampRelease);
       expect(result.lpfCutoffHz).toBe(PARAM_DEFAULTS.lpfCutoffHz);
       expect(result.lpfQ).toBe(PARAM_DEFAULTS.lpfQ);
+      expect(result.ampDelay).toBe(PARAM_DEFAULTS.ampDelay);
+      expect(result.ampHold).toBe(PARAM_DEFAULTS.ampHold);
+      expect(result.ampDecay).toBe(PARAM_DEFAULTS.ampDecay);
+      expect(result.ampSustain).toBe(PARAM_DEFAULTS.ampSustain);
       expect(result.loop).toBe(false);
       expect(result.loopStart).toBe(0);
       expect(result.loopEnd).toBe(0);
@@ -91,6 +95,21 @@ describe("resolveParams", () => {
         100,
       );
       expect(groupOnly.lpfQ).toBe(5);
+    });
+
+    it("region ADSR params override group ADSR params, which override PARAM_DEFAULTS", () => {
+      const g = group({
+        ampDelay: 0.1,
+        ampHold: 0.2,
+        ampDecay: 0.3,
+        ampSustain: 0.5,
+      });
+      const r = region({ key: 60, ampDecay: 0.9, ampSustain: 0.1 });
+      const result = resolveParams(undefined, g, r, 60, 100);
+      expect(result.ampDelay).toBe(0.1); // from group, region doesn't override
+      expect(result.ampHold).toBe(0.2); // from group
+      expect(result.ampDecay).toBe(0.9); // region overrides group
+      expect(result.ampSustain).toBe(0.1); // region overrides group
     });
 
     it("noteOverrides override region params", () => {
