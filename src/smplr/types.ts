@@ -4,10 +4,11 @@
  */
 export type PlaybackParams = {
   volume?: number; // dB adjustment (0 = no change)
+  pan?: number; // stereo position: -1 (full left) to 1 (full right), 0 = center
   tune?: number; // pitch adjustment in semitones
   detune?: number; // fine pitch adjustment in cents
   ampRelease?: number; // release envelope time in seconds
-  ampAttack?: number; // attack time in seconds (not yet implemented)
+  ampAttack?: number; // attack time in seconds
   lpfCutoffHz?: number; // low-pass filter cutoff frequency in Hz
   offset?: number; // start playback from this position in seconds
   loop?: boolean;
@@ -131,6 +132,7 @@ export type VoiceParams = {
   detune: number; // cents (pitch transpose + tune + detune + note override)
   velocity: number; // 0-127
   volume: number; // dB gain adjustment
+  pan: number; // stereo position: -1 (full left) to 1 (full right), 0 = center
   ampRelease: number; // release envelope time in seconds
   ampAttack: number; // attack time in seconds
   lpfCutoffHz: number; // low-pass filter cutoff in Hz

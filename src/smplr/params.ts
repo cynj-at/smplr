@@ -5,6 +5,7 @@ import { PlaybackParams, SmplrGroup, SmplrRegion, VoiceParams } from "./types";
  */
 export const PARAM_DEFAULTS: Required<PlaybackParams> = {
   volume: 0,
+  pan: 0,
   tune: 0,
   detune: 0,
   ampRelease: 0.3,
@@ -91,6 +92,7 @@ export function resolveParams(
     detune,
     velocity,
     volume: merged.volume,
+    pan: merged.pan,
     ampRelease: overrides?.ampRelease ?? merged.ampRelease,
     ampAttack: merged.ampAttack,
     lpfCutoffHz: overrides?.lpfCutoffHz ?? merged.lpfCutoffHz,

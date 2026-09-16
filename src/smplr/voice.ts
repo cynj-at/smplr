@@ -69,10 +69,17 @@ export class Voice {
     const gain = context.createGain();
     gain.gain.value = midiVelToGain(params.velocity) * dbToGain(params.volume);
 
+    // Stereo pan — only inserted when off-center
+    let panner: StereoPannerNode | undefined;
+    if (params.pan !== 0) {
+      panner = context.createStereoPanner();
+      panner.pan.value = params.pan;
+    }
+
     /**
      * Attack/release envelope. Attack ramps 0 → 1 over ampAttack seconds (only scheduled when
      * non-zero, matching the SF2 default of "no attack stage").
-    */
+     */
     const envelope = context.createGain();
     if (this.#ampAttack > 0) {
       envelope.gain.setValueAtTime(0, startAt);
@@ -81,14 +88,19 @@ export class Voice {
       envelope.gain.value = 1.0;
     }
 
-    // Wire: source → [lpf] → gain → envelope → destination
+    // Wire: source → [lpf] → gain → [pan] → envelope → destination
     if (lpf) {
       source.connect(lpf);
       lpf.connect(gain);
     } else {
       source.connect(gain);
     }
-    gain.connect(envelope);
+    if (panner) {
+      gain.connect(panner);
+      panner.connect(envelope);
+    } else {
+      gain.connect(envelope);
+    }
     envelope.connect(destination);
     /**
      * Offset: VoiceParams.offset is in seconds (matches loopStart/loopEnd).
@@ -110,6 +122,7 @@ export class Voice {
     source.onended = () => {
       this.#state = "stopped";
       envelope.disconnect();
+      panner?.disconnect();
       gain.disconnect();
       lpf?.disconnect();
       source.disconnect();
@@ -143,8 +156,8 @@ export class Voice {
        * Apply release envelope then stop the source. If stopped mid-attack, start the release
        * from wherever the attack ramp actually was at time t (not 1.0) - otherwise the envelope
        * would jump up to full volume before fading out.
-      */
-      
+       */
+
       const attackValueAtT =
         this.#ampAttack > 0
           ? Math.min(1, (t - this.#startAt) / this.#ampAttack)
