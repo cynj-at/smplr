@@ -57,12 +57,15 @@ export class Voice {
       source.loopEnd = params.loopEnd || buffer.duration;
     }
 
-    // LPF — only inserted when cutoff is meaningfully below Nyquist
+    // LPF — only inserted when cutoff is meaningfully below Nyquist. Q shapes the resonant
+    // peak at the cutoff frequency; irrelevant (and left at BiquadFilterNode's own default)
+    // when there's no filter to shape.
     let lpf: BiquadFilterNode | undefined;
     if (params.lpfCutoffHz < 20000) {
       lpf = context.createBiquadFilter();
       lpf.type = "lowpass";
       lpf.frequency.value = params.lpfCutoffHz;
+      lpf.Q.value = params.lpfQ;
     }
 
     // Velocity gain × dB volume
