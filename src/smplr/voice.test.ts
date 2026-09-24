@@ -77,6 +77,25 @@ function makeOscillator() {
   };
 }
 
+function makeConstantSource() {
+  return {
+    offset: { value: 0 },
+    connected: [] as unknown[],
+    connect(dest: unknown) {
+      this.connected.push(dest);
+    },
+    disconnect: jest.fn(),
+    startedAt: undefined as number | undefined,
+    stoppedAt: undefined as number | undefined,
+    start(when?: number) {
+      this.startedAt = when;
+    },
+    stop(when?: number) {
+      this.stoppedAt = when;
+    },
+  };
+}
+
 type SourceMock = ReturnType<typeof makeSource>;
 
 function makeSource({ withDetune = true } = {}) {
@@ -116,6 +135,7 @@ function makeContext({ safari = false, currentTime = 0 } = {}) {
   const filters: ReturnType<typeof makeFilter>[] = [];
   const panners: ReturnType<typeof makePanner>[] = [];
   const oscillators: ReturnType<typeof makeOscillator>[] = [];
+  const constantSources: ReturnType<typeof makeConstantSource>[] = [];
 
   const ctx = {
     currentTime,
@@ -145,6 +165,11 @@ function makeContext({ safari = false, currentTime = 0 } = {}) {
       oscillators.push(o);
       return o as unknown as OscillatorNode;
     },
+    createConstantSource() {
+      const c = makeConstantSource();
+      constantSources.push(c);
+      return c as unknown as ConstantSourceNode;
+    },
   };
 
   return {
@@ -154,6 +179,7 @@ function makeContext({ safari = false, currentTime = 0 } = {}) {
     filters,
     panners,
     oscillators,
+    constantSources,
   };
 }
 
@@ -203,6 +229,14 @@ const BASE_PARAMS: VoiceParams = {
   vibLfoToPitch: 0,
   vibLfoRateHz: 8.176,
   vibLfoDelay: 0,
+  modEnvToPitch: 0,
+  modEnvToFilterFc: 0,
+  modEnvDelay: 0,
+  modEnvAttack: 0,
+  modEnvHold: 0,
+  modEnvDecay: 0,
+  modEnvSustain: 1,
+  modEnvRelease: 0,
   offset: 0,
   loop: false,
   loopStart: 0,
@@ -225,7 +259,15 @@ function makeVoice(
     group?: number;
   } = {},
 ) {
-  const { ctx, sources, gains, filters, panners, oscillators } = makeContext({
+  const {
+    ctx,
+    sources,
+    gains,
+    filters,
+    panners,
+    oscillators,
+    constantSources,
+  } = makeContext({
     safari,
     currentTime,
   });
@@ -249,6 +291,7 @@ function makeVoice(
     filters,
     panners,
     oscillators,
+    constantSources,
     buffer,
     destination,
   };
@@ -632,6 +675,103 @@ describe("LFO filter/volume modulation", () => {
       modLfoToVolume: 0,
     });
     expect(oscillators).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Modulation envelope
+// ---------------------------------------------------------------------------
+
+describe("modulation envelope", () => {
+  it("does not create a ConstantSourceNode when both mod envelope depths are 0", () => {
+    const { constantSources } = makeVoice({
+      modEnvToPitch: 0,
+      modEnvToFilterFc: 0,
+    });
+    expect(constantSources).toHaveLength(0);
+  });
+
+  it("creates a ConstantSourceNode (offset=1) shaped by a gain, wired to source.detune, when modEnvToPitch != 0", () => {
+    const { sources, constantSources, gains } = makeVoice(
+      { modEnvToPitch: 30 },
+      { currentTime: 1 },
+    );
+    expect(constantSources).toHaveLength(1);
+    expect(constantSources[0].offset.value).toBe(1);
+    expect(constantSources[0].startedAt).toBe(1);
+
+    // constantSource -> shaper(gain) -> depth(gain) -> source.detune
+    const shaper = constantSources[0].connected[0] as ReturnType<
+      typeof makeGain
+    >;
+    expect(gains).toContain(shaper);
+    const depth = shaper.connected[0] as ReturnType<typeof makeGain>;
+    expect(depth.gain.value).toBe(30);
+    expect(depth.connected[0]).toBe((sources[0] as any).detune);
+  });
+
+  it("does not create anything for modEnvToFilterFc when there's no LPF to modulate", () => {
+    const { constantSources } = makeVoice({
+      lpfCutoffHz: 20000,
+      modEnvToFilterFc: 500,
+    });
+    expect(constantSources).toHaveLength(0);
+  });
+
+  it("connects to lpf.frequency with the same linearized depth formula as the LFO", () => {
+    const { filters, constantSources } = makeVoice({
+      lpfCutoffHz: 1000,
+      modEnvToFilterFc: 1200,
+    });
+    const expectedDepthHz = 1000 * Math.LN2;
+    const shaper = constantSources[0].connected[0] as ReturnType<
+      typeof makeGain
+    >;
+    const depth = shaper.connected[0] as ReturnType<typeof makeGain>;
+    expect(depth.gain.value).toBeCloseTo(expectedDepthHz);
+    expect(depth.connected[0]).toBe(filters[0].frequency);
+  });
+
+  it("shaper stays flat at 1 (no scheduling) when every mod envelope phase is at its default", () => {
+    const { constantSources } = makeVoice({ modEnvToPitch: 10 });
+    const shaper = constantSources[0].connected[0] as ReturnType<
+      typeof makeGain
+    >;
+    expect(shaper.gain.value).toBe(1);
+    expect(shaper.gain.setValueAtTime).not.toHaveBeenCalled();
+  });
+
+  it("schedules the delay/attack/hold/decay/sustain shape on the shaper when timing is non-default", () => {
+    const { constantSources } = makeVoice(
+      { modEnvToPitch: 10, modEnvAttack: 0.5 },
+      { currentTime: 2 },
+    );
+    const shaper = constantSources[0].connected[0] as ReturnType<
+      typeof makeGain
+    >;
+    expect(shaper.gain.setValueAtTime).toHaveBeenCalledWith(0, 2);
+    expect(shaper.gain.linearRampToValueAtTime).toHaveBeenCalledWith(1.0, 2.5);
+  });
+
+  it("stops the ConstantSourceNode at startAt when stopped at or before start", () => {
+    const { voice, constantSources } = makeVoice(
+      { modEnvToPitch: 10 },
+      { startTime: 2 },
+    );
+    voice.stop(1);
+    expect(constantSources[0].stoppedAt).toBe(1);
+  });
+
+  it("applies the modulation envelope's own release time, independent of the amplitude envelope's", () => {
+    const { voice, sources, constantSources } = makeVoice(
+      { modEnvToPitch: 10, ampRelease: 0.5, modEnvRelease: 2 },
+      { currentTime: 0 },
+    );
+
+    voice.stop(1);
+
+    expect(sources[0].stoppedAt).toBe(1.5); // 1 + ampRelease(0.5)
+    expect(constantSources[0].stoppedAt).toBe(3); // 1 + modEnvRelease(2) - different from the amp release
   });
 });
 

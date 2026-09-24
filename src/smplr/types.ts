@@ -29,6 +29,18 @@ export type PlaybackParams = {
   vibLfoToPitch?: number; // pitch modulation depth in cents (peak deviation); 0 = no effect
   vibLfoRateHz?: number; // vibrato LFO rate in Hz
   vibLfoDelay?: number; // silence before the vibrato LFO starts, in seconds
+  // Modulation envelope -> pitch / filter cutoff: a second, independent delay/attack/hold/
+  // decay/sustain/release envelope (same shape as ampAttack etc. above) that can shape pitch
+  // and/or filter cutoff over time. Filter depth is a linear approximation,
+  // same caveat as the LFO's filter destination above.
+  modEnvToPitch?: number; // pitch modulation depth in cents (peak deviation); 0 = no effect
+  modEnvToFilterFc?: number; // filter cutoff modulation depth in cents (peak deviation); 0 = no effect
+  modEnvDelay?: number; // seconds of silence before the modulation envelope's attack starts
+  modEnvAttack?: number; // seconds to ramp the modulation envelope 0 -> 1
+  modEnvHold?: number; // seconds held at peak before the modulation envelope's decay starts
+  modEnvDecay?: number; // seconds for a *full* (100%) decay - see computeAdsrTimes in envelope.ts
+  modEnvSustain?: number; // level held after decay, until note-off (0-1, 1 = no decay)
+  modEnvRelease?: number; // seconds for the modulation envelope to fade to 0 after note-off
   offset?: number; // start playback from this position in seconds
   loop?: boolean;
   loopStart?: number; // loop start in seconds
@@ -168,6 +180,14 @@ export type VoiceParams = {
   vibLfoToPitch: number; // pitch modulation depth in cents; 0 = no LFO
   vibLfoRateHz: number; // vibrato LFO rate in Hz
   vibLfoDelay: number; // silence before the vibrato LFO starts, in seconds
+  modEnvToPitch: number; // pitch modulation depth in cents; 0 = no effect
+  modEnvToFilterFc: number; // filter cutoff modulation depth in cents; 0 = no effect
+  modEnvDelay: number; // seconds of silence before the modulation envelope's attack starts
+  modEnvAttack: number; // seconds to ramp the modulation envelope 0 -> 1
+  modEnvHold: number; // seconds held at peak before the modulation envelope's decay starts
+  modEnvDecay: number; // seconds for a *full* (100%) decay
+  modEnvSustain: number; // level held after decay, until note-off (0-1, 1 = no decay)
+  modEnvRelease: number; // seconds for the modulation envelope to fade to 0 after note-off
   offset: number; // start position in seconds
   loop: boolean;
   loopStart: number; // seconds

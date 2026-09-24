@@ -129,6 +129,15 @@ describe("resolveParams", () => {
       expect(result.modLfoToVolume).toBe(50);
     });
 
+    it("resolves modulation envelope params (region overrides group, which overrides PARAM_DEFAULTS)", () => {
+      const g = group({ modEnvDecay: 0.5, modEnvSustain: 0.2 });
+      const r = region({ key: 60, modEnvToPitch: 400, modEnvSustain: 0.8 });
+      const result = resolveParams(undefined, g, r, 60, 100);
+      expect(result.modEnvToPitch).toBe(400);
+      expect(result.modEnvDecay).toBe(0.5); // from group
+      expect(result.modEnvSustain).toBe(0.8); // region overrides group
+    });
+
     it("noteOverrides override region params", () => {
       const r = region({
         key: 60,
