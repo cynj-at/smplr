@@ -1,5 +1,19 @@
 import { dbToGain, midiVelToGain } from "./volume";
 import { VoiceParams } from "./types";
+import {
+  AdsrTimes,
+  computeAdsrTimes,
+  hasAdsrShape,
+  scheduleAdsr,
+  scheduleAdsrRelease,
+} from "./envelope";
+
+type ModEnv = {
+  source: ConstantSourceNode;
+  shaper: GainNode;
+  times: AdsrTimes;
+  release: number;
+};
 
 export class Voice {
   readonly stopId: string | number;
@@ -10,14 +24,11 @@ export class Voice {
   #envelope: GainNode;
   #startAt: number;
   #releaseAt: number | undefined;
-  #delayEnd: number;
-  #attackEnd: number;
-  #holdEnd: number;
-  #decayEnd: number;
-  #sustainLevel: number;
+  #ampEnvTimes: AdsrTimes;
   #ampRelease: number;
   #lfoOscillators: OscillatorNode[] = [];
-  #lfoDepths: GainNode[] = [];
+  #modDepths: GainNode[] = [];
+  #modEnv: ModEnv | undefined;
   #state: "playing" | "stopping" | "stopped" = "playing";
   #endedCallbacks: (() => void)[] = [];
 
@@ -38,22 +49,14 @@ export class Voice {
     const startAt = startTime ?? context.currentTime;
     this.#startAt = startAt;
 
-    /**
-     * Volume envelope phase boundaries, as absolute AudioContext times: delay (silent) -> attack
-     * (0 -> 1 ramp) -> hold (flat at 1) -> decay (1 -> ampSustain ramp) -> sustain (flat at
-     * ampSustain, held until stop()). SF2's DecayVolEnv is the time for a *full* (100%) decay;
-     * the decay phase actually ends early, once the envelope reaches ampSustain.
-     */
-    const delayEnd = startAt + params.ampDelay;
-    const attackEnd = delayEnd + params.ampAttack;
-    const holdEnd = attackEnd + params.ampHold;
-    const decayToSustainSeconds = params.ampDecay * (1 - params.ampSustain);
-    const decayEnd = holdEnd + decayToSustainSeconds;
-    this.#delayEnd = delayEnd;
-    this.#attackEnd = attackEnd;
-    this.#holdEnd = holdEnd;
-    this.#decayEnd = decayEnd;
-    this.#sustainLevel = params.ampSustain;
+    const ampEnvTimes = computeAdsrTimes(startAt, {
+      delay: params.ampDelay,
+      attack: params.ampAttack,
+      hold: params.ampHold,
+      decay: params.ampDecay,
+      sustain: params.ampSustain,
+    });
+    this.#ampEnvTimes = ampEnvTimes;
 
     // --- Build audio graph ---
 
@@ -125,7 +128,7 @@ export class Voice {
         params.modLfoDelay,
       );
       if (source.detune) {
-        this.#connectLfoDepth(
+        this.#connectModDepth(
           context,
           modLfo,
           source.detune,
@@ -135,11 +138,11 @@ export class Voice {
       if (lpf) {
         const filterDepthHz =
           params.lpfCutoffHz * (Math.LN2 / 1200) * params.modLfoToFilterFc;
-        this.#connectLfoDepth(context, modLfo, lpf.frequency, filterDepthHz);
+        this.#connectModDepth(context, modLfo, lpf.frequency, filterDepthHz);
       }
       const volumeDepthLinear =
         gain.gain.value * (Math.LN10 / 200) * params.modLfoToVolume;
-      this.#connectLfoDepth(context, modLfo, gain.gain, volumeDepthLinear);
+      this.#connectModDepth(context, modLfo, gain.gain, volumeDepthLinear);
     }
     if (source.detune && params.vibLfoToPitch !== 0) {
       const vibLfo = this.#createLfo(
@@ -148,12 +151,69 @@ export class Voice {
         params.vibLfoRateHz,
         params.vibLfoDelay,
       );
-      this.#connectLfoDepth(
+      this.#connectModDepth(
         context,
         vibLfo,
         source.detune,
         params.vibLfoToPitch,
       );
+    }
+
+    /**
+     * Modulation envelope: a second, independent delay/attack/hold/decay/sustain/release
+     * envelope (same shape as the amplitude envelope below, different generators/timing) that
+     * can shape pitch and/or filter cutoff over time - e.g. a brass "pitch swoop" on attack.
+     * Realized as a ConstantSourceNode (a flat 1.0 signal) shaped by a gain node carrying the
+     * envelope curve, so its output can be scaled by a depth and summed onto a destination
+     * AudioParam exactly like the LFOs above. Has its own release phase, independent of the
+     * amplitude envelope's - see stop().
+     */
+    if (
+      (source.detune && params.modEnvToPitch !== 0) ||
+      (lpf && params.modEnvToFilterFc !== 0)
+    ) {
+      const modEnvTimes = computeAdsrTimes(startAt, {
+        delay: params.modEnvDelay,
+        attack: params.modEnvAttack,
+        hold: params.modEnvHold,
+        decay: params.modEnvDecay,
+        sustain: params.modEnvSustain,
+      });
+      const modEnvSource = context.createConstantSource();
+      modEnvSource.offset.value = 1;
+      const modEnvShaper = context.createGain();
+      if (hasAdsrShape(startAt, modEnvTimes)) {
+        scheduleAdsr(modEnvShaper.gain, startAt, modEnvTimes);
+      } else {
+        modEnvShaper.gain.value = 1.0;
+      }
+      modEnvSource.connect(modEnvShaper);
+      modEnvSource.start(startAt);
+
+      if (source.detune && params.modEnvToPitch !== 0) {
+        this.#connectModDepth(
+          context,
+          modEnvShaper,
+          source.detune,
+          params.modEnvToPitch,
+        );
+      }
+      if (lpf && params.modEnvToFilterFc !== 0) {
+        const filterDepthHz =
+          params.lpfCutoffHz * (Math.LN2 / 1200) * params.modEnvToFilterFc;
+        this.#connectModDepth(
+          context,
+          modEnvShaper,
+          lpf.frequency,
+          filterDepthHz,
+        );
+      }
+      this.#modEnv = {
+        source: modEnvSource,
+        shaper: modEnvShaper,
+        times: modEnvTimes,
+        release: params.modEnvRelease,
+      };
     }
 
     /**
@@ -163,17 +223,8 @@ export class Voice {
      * AudioParam automation entirely and stays flat at 1, matching plain sample playback.
      */
     const envelope = context.createGain();
-    const hasEnvelopeShape =
-      delayEnd > startAt ||
-      attackEnd > delayEnd ||
-      holdEnd > attackEnd ||
-      this.#sustainLevel !== 1;
-    if (hasEnvelopeShape) {
-      envelope.gain.setValueAtTime(0, startAt);
-      envelope.gain.setValueAtTime(0, delayEnd);
-      envelope.gain.linearRampToValueAtTime(1.0, attackEnd);
-      envelope.gain.setValueAtTime(1.0, holdEnd);
-      envelope.gain.linearRampToValueAtTime(this.#sustainLevel, decayEnd);
+    if (hasAdsrShape(startAt, ampEnvTimes)) {
+      scheduleAdsr(envelope.gain, startAt, ampEnvTimes);
     } else {
       envelope.gain.value = 1.0;
     }
@@ -217,7 +268,9 @@ export class Voice {
       lpf?.disconnect();
       source.disconnect();
       this.#lfoOscillators.forEach((osc) => osc.disconnect());
-      this.#lfoDepths.forEach((depth) => depth.disconnect());
+      this.#modDepths.forEach((depth) => depth.disconnect());
+      this.#modEnv?.source.disconnect();
+      this.#modEnv?.shaper.disconnect();
       for (const cb of this.#endedCallbacks) cb();
       this.#endedCallbacks = [];
     };
@@ -238,19 +291,23 @@ export class Voice {
     return osc;
   }
 
-  /** Sums `osc`'s output, scaled by `depth`, onto `target`. No-op when `depth` is 0. */
-  #connectLfoDepth(
+  /**
+   * Sums `source`'s output, scaled by `depth`, onto `target`. No-op when `depth` is 0. `source`
+   * is either an LFO oscillator or a modulation envelope's shaper gain (both are plain AudioNode
+   * outputs from this point on).
+   */
+  #connectModDepth(
     context: BaseAudioContext,
-    osc: OscillatorNode,
+    source: AudioNode,
     target: AudioParam,
     depth: number,
   ): void {
     if (depth === 0) return;
     const depthGain = context.createGain();
     depthGain.gain.value = depth;
-    osc.connect(depthGain);
+    source.connect(depthGain);
     depthGain.connect(target);
-    this.#lfoDepths.push(depthGain);
+    this.#modDepths.push(depthGain);
   }
 
   /**
@@ -274,40 +331,31 @@ export class Voice {
       this.#source.stop(t);
       this.#envelope.gain.cancelScheduledValues(t);
       this.#lfoOscillators.forEach((osc) => osc.stop(t));
+      this.#modEnv?.source.stop(t);
     } else {
-      /**
-       * Apply release envelope then stop the source, starting the release from wherever the
-       * envelope actually was at time t (whichever phase - delay/attack/hold/decay/sustain -
-       * that falls in), not from 1.0 - otherwise a note stopped mid-attack or mid-decay would
-       * jump to a different volume before fading out.
-       */
-      const valueAtT = this.#envelopeValueAt(t);
-      const stopAt = t + this.#ampRelease;
-      this.#envelope.gain.cancelScheduledValues(t);
-      this.#envelope.gain.setValueAtTime(valueAtT, t);
-      this.#envelope.gain.linearRampToValueAtTime(0, stopAt);
+      // Apply release envelope then stop the source, starting the release from wherever the
+      // envelope actually was at time t - see scheduleAdsrRelease.
+      const stopAt = scheduleAdsrRelease(
+        this.#envelope.gain,
+        this.#ampEnvTimes,
+        t,
+        this.#ampRelease,
+      );
       this.#source.stop(stopAt);
       this.#lfoOscillators.forEach((osc) => osc.stop(stopAt));
-    }
-  }
 
-  /** The volume envelope's value at AudioContext time `t` (t must be > #startAt). */
-  #envelopeValueAt(t: number): number {
-    if (t <= this.#delayEnd) return 0;
-    if (t <= this.#attackEnd) {
-      return this.#attackEnd > this.#delayEnd
-        ? (t - this.#delayEnd) / (this.#attackEnd - this.#delayEnd)
-        : 1;
+      // The modulation envelope has its own, independent release time - not necessarily the
+      // same as the amplitude envelope's.
+      if (this.#modEnv) {
+        const modStopAt = scheduleAdsrRelease(
+          this.#modEnv.shaper.gain,
+          this.#modEnv.times,
+          t,
+          this.#modEnv.release,
+        );
+        this.#modEnv.source.stop(modStopAt);
+      }
     }
-    if (t <= this.#holdEnd) return 1;
-    if (t <= this.#decayEnd) {
-      return this.#decayEnd > this.#holdEnd
-        ? 1 +
-            (this.#sustainLevel - 1) *
-              ((t - this.#holdEnd) / (this.#decayEnd - this.#holdEnd))
-        : this.#sustainLevel;
-    }
-    return this.#sustainLevel;
   }
 
   /**
