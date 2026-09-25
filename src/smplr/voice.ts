@@ -2,15 +2,18 @@ import { dbToGain, midiVelToGain } from "./volume";
 import { VoiceParams } from "./types";
 import {
   AdsrTimes,
+  EnvelopeMapping,
   computeAdsrTimes,
   hasAdsrShape,
   scheduleAdsr,
   scheduleAdsrRelease,
 } from "./envelope";
 
+/** A param driven by the modulation envelope, and how envelope values map onto its units. */
+type ModEnvTarget = { param: AudioParam; mapping: EnvelopeMapping };
+
 type ModEnv = {
-  source: ConstantSourceNode;
-  shaper: GainNode;
+  targets: ModEnvTarget[];
   times: AdsrTimes;
   release: number;
 };
@@ -162,15 +165,36 @@ export class Voice {
      * Modulation envelope: a second, independent delay/attack/hold/decay/sustain/release
      * envelope (same shape as the amplitude envelope below, different generators/timing) that
      * can shape pitch and/or filter cutoff over time - e.g. a brass "pitch swoop" on attack.
-     * Realized as a ConstantSourceNode (a flat 1.0 signal) shaped by a gain node carrying the
-     * envelope curve, so its output can be scaled by a depth and summed onto a destination
-     * AudioParam exactly like the LFOs above. Has its own release phase, independent of the
-     * amplitude envelope's - see stop().
      */
-    if (
-      (source.detune && params.modEnvToPitch !== 0) ||
-      (lpf && params.modEnvToFilterFc !== 0)
-    ) {
+    const modEnvTargets: ModEnvTarget[] = [];
+    if (source.detune && params.modEnvToPitch !== 0) {
+      modEnvTargets.push({
+        param: source.detune,
+        mapping: {
+          toValue: (env) => cents + params.modEnvToPitch * env,
+          ramp: "linear",
+        },
+      });
+    }
+    if (lpf && params.modEnvToFilterFc !== 0) {
+      const nyquist = context.sampleRate / 2;
+      modEnvTargets.push({
+        param: lpf.frequency,
+        mapping: {
+          toValue: (env) =>
+            Math.min(
+              nyquist,
+              Math.max(
+                1,
+                params.lpfCutoffHz *
+                  Math.pow(2, (params.modEnvToFilterFc * env) / 1200),
+              ),
+            ),
+          ramp: "exponential",
+        },
+      });
+    }
+    if (modEnvTargets.length > 0) {
       const modEnvTimes = computeAdsrTimes(startAt, {
         delay: params.modEnvDelay,
         attack: params.modEnvAttack,
@@ -178,38 +202,16 @@ export class Voice {
         decay: params.modEnvDecay,
         sustain: params.modEnvSustain,
       });
-      const modEnvSource = context.createConstantSource();
-      modEnvSource.offset.value = 1;
-      const modEnvShaper = context.createGain();
-      if (hasAdsrShape(startAt, modEnvTimes)) {
-        scheduleAdsr(modEnvShaper.gain, startAt, modEnvTimes);
-      } else {
-        modEnvShaper.gain.value = 1.0;
-      }
-      modEnvSource.connect(modEnvShaper);
-      modEnvSource.start(startAt);
-
-      if (source.detune && params.modEnvToPitch !== 0) {
-        this.#connectModDepth(
-          context,
-          modEnvShaper,
-          source.detune,
-          params.modEnvToPitch,
-        );
-      }
-      if (lpf && params.modEnvToFilterFc !== 0) {
-        const filterDepthHz =
-          params.lpfCutoffHz * (Math.LN2 / 1200) * params.modEnvToFilterFc;
-        this.#connectModDepth(
-          context,
-          modEnvShaper,
-          lpf.frequency,
-          filterDepthHz,
-        );
+      const shaped = hasAdsrShape(startAt, modEnvTimes);
+      for (const { param, mapping } of modEnvTargets) {
+        if (shaped) {
+          scheduleAdsr(param, startAt, modEnvTimes, mapping);
+        } else {
+          param.value = mapping.toValue(1);
+        }
       }
       this.#modEnv = {
-        source: modEnvSource,
-        shaper: modEnvShaper,
+        targets: modEnvTargets,
         times: modEnvTimes,
         release: params.modEnvRelease,
       };
@@ -268,8 +270,6 @@ export class Voice {
       source.disconnect();
       this.#lfoOscillators.forEach((osc) => osc.disconnect());
       this.#modDepths.forEach((depth) => depth.disconnect());
-      this.#modEnv?.source.disconnect();
-      this.#modEnv?.shaper.disconnect();
       for (const cb of this.#endedCallbacks) cb();
       this.#endedCallbacks = [];
     };
@@ -323,7 +323,6 @@ export class Voice {
       // Stop at or before start: cancel the note entirely
       this.#source.stop(t);
       this.#lfoOscillators.forEach((osc) => osc.stop(t));
-      this.#modEnv?.source.stop(t);
     } else {
       // Apply release envelope then stop the source, starting the release from wherever the
       // envelope actually was at time t - see scheduleAdsrRelease.
@@ -339,13 +338,10 @@ export class Voice {
       // The modulation envelope has its own, independent release time - not necessarily the
       // same as the amplitude envelope's.
       if (this.#modEnv) {
-        const modStopAt = scheduleAdsrRelease(
-          this.#modEnv.shaper.gain,
-          this.#modEnv.times,
-          t,
-          this.#modEnv.release,
-        );
-        this.#modEnv.source.stop(modStopAt);
+        const { targets, times, release } = this.#modEnv;
+        for (const { param, mapping } of targets) {
+          scheduleAdsrRelease(param, times, t, release, mapping);
+        }
       }
     }
   }
