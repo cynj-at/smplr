@@ -22,10 +22,21 @@ function makeGain() {
   };
 }
 
+/** AudioParam mock recording automation calls. */
+function makeParam(value = 0) {
+  return {
+    value,
+    cancelScheduledValues: jest.fn(),
+    setValueAtTime: jest.fn(),
+    linearRampToValueAtTime: jest.fn(),
+    exponentialRampToValueAtTime: jest.fn(),
+  };
+}
+
 function makeFilter() {
   return {
     type: "" as BiquadFilterType,
-    frequency: { value: 0 },
+    frequency: makeParam(),
     Q: { value: 0 },
     connected: [] as unknown[],
     connect(dest: unknown) {
@@ -49,7 +60,7 @@ function makePanner() {
 /** A connectable AudioParam mock, for source.detune (LFOs sum their output onto it). */
 function makeDetune() {
   return {
-    value: 0,
+    ...makeParam(),
     connected: [] as unknown[],
     connect(dest: unknown) {
       this.connected.push(dest);
@@ -61,25 +72,6 @@ function makeOscillator() {
   return {
     type: "" as OscillatorType,
     frequency: { value: 0 },
-    connected: [] as unknown[],
-    connect(dest: unknown) {
-      this.connected.push(dest);
-    },
-    disconnect: jest.fn(),
-    startedAt: undefined as number | undefined,
-    stoppedAt: undefined as number | undefined,
-    start(when?: number) {
-      this.startedAt = when;
-    },
-    stop(when?: number) {
-      this.stoppedAt = when;
-    },
-  };
-}
-
-function makeConstantSource() {
-  return {
-    offset: { value: 0 },
     connected: [] as unknown[],
     connect(dest: unknown) {
       this.connected.push(dest);
@@ -135,10 +127,10 @@ function makeContext({ safari = false, currentTime = 0 } = {}) {
   const filters: ReturnType<typeof makeFilter>[] = [];
   const panners: ReturnType<typeof makePanner>[] = [];
   const oscillators: ReturnType<typeof makeOscillator>[] = [];
-  const constantSources: ReturnType<typeof makeConstantSource>[] = [];
 
   const ctx = {
     currentTime,
+    sampleRate: 44100,
     destination: {} as unknown as AudioNode,
     createBufferSource() {
       const s = makeSource({ withDetune: !safari });
@@ -165,11 +157,6 @@ function makeContext({ safari = false, currentTime = 0 } = {}) {
       oscillators.push(o);
       return o as unknown as OscillatorNode;
     },
-    createConstantSource() {
-      const c = makeConstantSource();
-      constantSources.push(c);
-      return c as unknown as ConstantSourceNode;
-    },
   };
 
   return {
@@ -179,7 +166,6 @@ function makeContext({ safari = false, currentTime = 0 } = {}) {
     filters,
     panners,
     oscillators,
-    constantSources,
   };
 }
 
@@ -259,15 +245,7 @@ function makeVoice(
     group?: number;
   } = {},
 ) {
-  const {
-    ctx,
-    sources,
-    gains,
-    filters,
-    panners,
-    oscillators,
-    constantSources,
-  } = makeContext({
+  const { ctx, sources, gains, filters, panners, oscillators } = makeContext({
     safari,
     currentTime,
   });
@@ -291,7 +269,6 @@ function makeVoice(
     filters,
     panners,
     oscillators,
-    constantSources,
     buffer,
     destination,
   };
@@ -683,95 +660,92 @@ describe("LFO filter/volume modulation", () => {
 // ---------------------------------------------------------------------------
 
 describe("modulation envelope", () => {
-  it("does not create a ConstantSourceNode when both mod envelope depths are 0", () => {
-    const { constantSources } = makeVoice({
-      modEnvToPitch: 0,
-      modEnvToFilterFc: 0,
+  const detuneOf = (sources: unknown[]) => (sources[0] as any).detune;
+
+  it("creates no extra audio nodes (it is scheduled as AudioParam automation)", () => {
+    const { oscillators, gains } = makeVoice({
+      lpfCutoffHz: 1000,
+      modEnvToPitch: 30,
+      modEnvToFilterFc: 500,
+      modEnvAttack: 0.5,
     });
-    expect(constantSources).toHaveLength(0);
+    expect(oscillators).toHaveLength(0);
+    expect(gains).toHaveLength(2); // velocity gain + amplitude envelope only
   });
 
-  it("creates a ConstantSourceNode (offset=1) shaped by a gain, wired to source.detune, when modEnvToPitch != 0", () => {
-    const { sources, constantSources, gains } = makeVoice(
-      { modEnvToPitch: 30 },
-      { currentTime: 1 },
-    );
-    expect(constantSources).toHaveLength(1);
-    expect(constantSources[0].offset.value).toBe(1);
-    expect(constantSources[0].startedAt).toBe(1);
-
-    // constantSource -> shaper(gain) -> depth(gain) -> source.detune
-    const shaper = constantSources[0].connected[0] as ReturnType<
-      typeof makeGain
-    >;
-    expect(gains).toContain(shaper);
-    const depth = shaper.connected[0] as ReturnType<typeof makeGain>;
-    expect(depth.gain.value).toBe(30);
-    expect(depth.connected[0]).toBe((sources[0] as any).detune);
+  it("does nothing when both mod envelope depths are 0", () => {
+    const { sources } = makeVoice({ modEnvToPitch: 0, modEnvToFilterFc: 0 });
+    expect(detuneOf(sources).setValueAtTime).not.toHaveBeenCalled();
   });
 
-  it("does not create anything for modEnvToFilterFc when there's no LPF to modulate", () => {
-    const { constantSources } = makeVoice({
+  it("does nothing for modEnvToFilterFc when there's no LPF to modulate", () => {
+    const { filters } = makeVoice({
       lpfCutoffHz: 20000,
       modEnvToFilterFc: 500,
     });
-    expect(constantSources).toHaveLength(0);
+    expect(filters).toHaveLength(0);
   });
 
-  it("connects to lpf.frequency with the same linearized depth formula as the LFO", () => {
-    const { filters, constantSources } = makeVoice({
-      lpfCutoffHz: 1000,
-      modEnvToFilterFc: 1200,
-    });
-    const expectedDepthHz = 1000 * Math.LN2;
-    const shaper = constantSources[0].connected[0] as ReturnType<
-      typeof makeGain
-    >;
-    const depth = shaper.connected[0] as ReturnType<typeof makeGain>;
-    expect(depth.gain.value).toBeCloseTo(expectedDepthHz);
-    expect(depth.connected[0]).toBe(filters[0].frequency);
-  });
-
-  it("shaper stays flat at 1 (no scheduling) when every mod envelope phase is at its default", () => {
-    const { constantSources } = makeVoice({ modEnvToPitch: 10 });
-    const shaper = constantSources[0].connected[0] as ReturnType<
-      typeof makeGain
-    >;
-    expect(shaper.gain.value).toBe(1);
-    expect(shaper.gain.setValueAtTime).not.toHaveBeenCalled();
-  });
-
-  it("schedules the delay/attack/hold/decay/sustain shape on the shaper when timing is non-default", () => {
-    const { constantSources } = makeVoice(
-      { modEnvToPitch: 10, modEnvAttack: 0.5 },
+  it("schedules pitch as linear-in-cents automation on source.detune, around the note's own detune", () => {
+    const { sources } = makeVoice(
+      { detune: 100, modEnvToPitch: 1200, modEnvAttack: 0.5, modEnvSustain: 1 },
       { currentTime: 2 },
     );
-    const shaper = constantSources[0].connected[0] as ReturnType<
-      typeof makeGain
-    >;
-    expect(shaper.gain.setValueAtTime).toHaveBeenCalledWith(0, 2);
-    expect(shaper.gain.linearRampToValueAtTime).toHaveBeenCalledWith(1.0, 2.5);
+    const detune = detuneOf(sources);
+    expect(detune.setValueAtTime).toHaveBeenCalledWith(100, 2); // env 0 -> base pitch
+    expect(detune.linearRampToValueAtTime).toHaveBeenCalledWith(1300, 2.5); // env 1 -> base + depth
   });
 
-  it("stops the ConstantSourceNode at startAt when stopped at or before start", () => {
-    const { voice, constantSources } = makeVoice(
-      { modEnvToPitch: 10 },
-      { startTime: 2 },
+  it("schedules the filter as exponential automation in Hz (exact: linear in cents)", () => {
+    const { filters } = makeVoice(
+      { lpfCutoffHz: 1000, modEnvToFilterFc: 1200, modEnvAttack: 0.5 },
+      { currentTime: 1 },
     );
-    voice.stop(1);
-    expect(constantSources[0].stoppedAt).toBe(1);
+    const freq = filters[0].frequency;
+    expect(freq.setValueAtTime).toHaveBeenCalledWith(1000, 1); // env 0 -> base cutoff
+    expect(freq.exponentialRampToValueAtTime).toHaveBeenCalledWith(2000, 1.5); // +1200 cents = 1 octave
+    expect(freq.linearRampToValueAtTime).not.toHaveBeenCalled();
   });
 
-  it("applies the modulation envelope's own release time, independent of the amplitude envelope's", () => {
-    const { voice, sources, constantSources } = makeVoice(
-      { modEnvToPitch: 10, ampRelease: 0.5, modEnvRelease: 2 },
+  it("clamps the filter target to Nyquist and keeps it positive", () => {
+    const { filters } = makeVoice({
+      lpfCutoffHz: 15000,
+      modEnvToFilterFc: 4800,
+      modEnvAttack: 0.1,
+    });
+    const targets =
+      filters[0].frequency.exponentialRampToValueAtTime.mock.calls.map(
+        (c) => c[0],
+      );
+    expect(Math.max(...targets)).toBeLessThanOrEqual(22050);
+    expect(Math.min(...targets)).toBeGreaterThan(0);
+  });
+
+  it("holds the target flat at full depth (no automation) when the envelope has no shape", () => {
+    const { sources } = makeVoice({ detune: 50, modEnvToPitch: 200 });
+    const detune = detuneOf(sources);
+    expect(detune.value).toBe(250);
+    expect(detune.setValueAtTime).not.toHaveBeenCalled();
+  });
+
+  it("releases from the envelope's current value with its own release time, independent of the amplitude envelope's", () => {
+    const { voice, sources } = makeVoice(
+      {
+        modEnvToPitch: 1000,
+        modEnvAttack: 1, // stopped 0.5s in -> env = 0.5
+        modEnvRelease: 2,
+        ampRelease: 0.5,
+      },
       { currentTime: 0 },
     );
+    const detune = detuneOf(sources);
 
-    voice.stop(1);
+    voice.stop(0.5);
 
-    expect(sources[0].stoppedAt).toBe(1.5); // 1 + ampRelease(0.5)
-    expect(constantSources[0].stoppedAt).toBe(3); // 1 + modEnvRelease(2) - different from the amp release
+    expect(detune.cancelScheduledValues).toHaveBeenCalledWith(0.5);
+    expect(detune.setValueAtTime).toHaveBeenCalledWith(500, 0.5); // 0 + 1000 * 0.5
+    expect(detune.linearRampToValueAtTime).toHaveBeenCalledWith(0, 2.5); // back to base over modEnvRelease (0.5 + 2)
+    expect(sources[0].stoppedAt).toBe(1); // amplitude release is a different time (0.5 + 0.5)
   });
 });
 

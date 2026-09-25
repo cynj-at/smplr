@@ -54,17 +54,45 @@ export function hasAdsrShape(startAt: number, times: AdsrTimes): boolean {
   );
 }
 
-/** schedules delay/attack/hold/decay/sustain shape onto `gain`, starting at `startAt` */
+/**
+ * How an envelope value (0-1) maps onto a destination AudioParam's own units, and how the
+ * param should ramp between phase boundaries. Defaults to identity + linear (a plain gain).
+ * E.g. a filter cutoff in Hz follows an envelope that is linear in *cents*, which is exactly an
+ * exponential ramp in Hz - so scheduling it directly is exact and needs no extra audio nodes.
+ */
+export type EnvelopeMapping = {
+  toValue: (envelope: number) => number;
+  ramp: "linear" | "exponential";
+};
+
+const IDENTITY: EnvelopeMapping = { toValue: (v) => v, ramp: "linear" };
+
+function rampTo(
+  param: AudioParam,
+  mapping: EnvelopeMapping,
+  value: number,
+  time: number,
+): void {
+  if (mapping.ramp === "exponential") {
+    param.exponentialRampToValueAtTime(value, time);
+  } else {
+    param.linearRampToValueAtTime(value, time);
+  }
+}
+
+/** schedules delay/attack/hold/decay/sustain shape onto `param`, starting at `startAt` */
 export function scheduleAdsr(
-  gain: AudioParam,
+  param: AudioParam,
   startAt: number,
   times: AdsrTimes,
+  mapping: EnvelopeMapping = IDENTITY,
 ): void {
-  gain.setValueAtTime(0, startAt);
-  gain.setValueAtTime(0, times.delayEnd);
-  gain.linearRampToValueAtTime(1.0, times.attackEnd);
-  gain.setValueAtTime(1.0, times.holdEnd);
-  gain.linearRampToValueAtTime(times.sustainLevel, times.decayEnd);
+  const v = mapping.toValue;
+  param.setValueAtTime(v(0), startAt);
+  param.setValueAtTime(v(0), times.delayEnd);
+  rampTo(param, mapping, v(1), times.attackEnd);
+  param.setValueAtTime(v(1), times.holdEnd);
+  rampTo(param, mapping, v(times.sustainLevel), times.decayEnd);
 }
 
 /** the envelope's value at AudioContext time `t`, whichever phase it falls in */
@@ -87,19 +115,21 @@ export function adsrValueAt(times: AdsrTimes, t: number): number {
 }
 
 /**
- * schedules release ramp on `gain`, starting from wherever the envelope actually was at time
- * `t` - so a note stopped mid-attack/mid-decay fades smoothly
+ * schedules release ramp on `param`, starting from wherever the envelope actually was at time
+ * `t` - so a note stopped mid-attack/mid-decay fades smoothly. Returns the time the ramp
+ * reaches the envelope's resting value (`t + releaseSeconds`)
  */
 export function scheduleAdsrRelease(
-  gain: AudioParam,
+  param: AudioParam,
   times: AdsrTimes,
   t: number,
   releaseSeconds: number,
+  mapping: EnvelopeMapping = IDENTITY,
 ): number {
-  const valueAtT = adsrValueAt(times, t);
+  const valueAtT = mapping.toValue(adsrValueAt(times, t));
   const stopAt = t + releaseSeconds;
-  gain.cancelScheduledValues(t);
-  gain.setValueAtTime(valueAtT, t);
-  gain.linearRampToValueAtTime(0, stopAt);
+  param.cancelScheduledValues(t);
+  param.setValueAtTime(valueAtT, t);
+  rampTo(param, mapping, mapping.toValue(0), stopAt);
   return stopAt;
 }

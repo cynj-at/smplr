@@ -2,6 +2,7 @@ import {
   computeAdsrTimes,
   hasAdsrShape,
   adsrValueAt,
+  scheduleAdsr,
   scheduleAdsrRelease,
   AdsrParams,
 } from "./envelope";
@@ -12,6 +13,7 @@ function makeGainParam() {
     cancelScheduledValues: jest.fn(),
     setValueAtTime: jest.fn(),
     linearRampToValueAtTime: jest.fn(),
+    exponentialRampToValueAtTime: jest.fn(),
   };
 }
 
@@ -108,5 +110,44 @@ describe("scheduleAdsrRelease", () => {
     expect(gain.setValueAtTime).toHaveBeenCalledWith(0.25, 0.25);
     expect(gain.linearRampToValueAtTime).toHaveBeenCalledWith(0, 0.75);
     expect(stopAt).toBe(0.75);
+  });
+});
+
+describe("envelope mapping (modulation targets)", () => {
+  const octave = {
+    toValue: (env: number) => 1000 * 2 ** env,
+    ramp: "exponential" as const,
+  };
+
+  it("scheduleAdsr maps envelope values into the param's units with the requested ramp", () => {
+    const param = makeGainParam();
+    const times = computeAdsrTimes(0, { ...FLAT, attack: 1, sustain: 0.5 });
+
+    scheduleAdsr(param as unknown as AudioParam, 0, times, octave);
+
+    expect(param.setValueAtTime).toHaveBeenCalledWith(1000, 0);
+    expect(param.exponentialRampToValueAtTime).toHaveBeenCalledWith(2000, 1);
+    expect(param.exponentialRampToValueAtTime).toHaveBeenCalledWith(
+      1000 * 2 ** 0.5,
+      times.decayEnd,
+    );
+    expect(param.linearRampToValueAtTime).not.toHaveBeenCalled();
+  });
+
+  it("scheduleAdsrRelease starts from the mapped current value and ramps to the mapped resting value", () => {
+    const param = makeGainParam();
+    const times = computeAdsrTimes(0, { ...FLAT, attack: 1 });
+
+    const stopAt = scheduleAdsrRelease(
+      param as unknown as AudioParam,
+      times,
+      0.5,
+      2,
+      octave,
+    );
+
+    expect(param.setValueAtTime).toHaveBeenCalledWith(1000 * 2 ** 0.5, 0.5);
+    expect(param.exponentialRampToValueAtTime).toHaveBeenCalledWith(1000, 2.5);
+    expect(stopAt).toBe(2.5);
   });
 });
