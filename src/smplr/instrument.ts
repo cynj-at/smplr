@@ -169,6 +169,7 @@ const SMPLR_OPTION_KEYS = [
   "onLoadProgress",
   "onStart",
   "onEnded",
+  "maxVoices",
 ] as const;
 
 function splitOptions<O>(options: O & Partial<SmplrOptions>): {
